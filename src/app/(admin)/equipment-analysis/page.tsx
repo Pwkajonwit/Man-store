@@ -48,6 +48,8 @@ interface Equipment {
     availableQuantity: number;
     quantity: number;
     unit: string;
+    minStock?: number;
+    imageUrl?: string;
 }
 
 interface UsageRecord {
@@ -150,7 +152,22 @@ export default function EquipmentAnalysisPage() {
     // Calculate stats
     const borrowableCount = equipment.filter(e => e.type === 'borrowable').length;
     const consumableCount = equipment.filter(e => e.type === 'consumable').length;
-    const lowStockItems = equipment.filter(e => e.status === 'low_stock' || e.status === 'out_of_stock');
+
+    // Low stock: เช็คจาก status หรือเทียบกับ minStock ที่ตั้งไว้
+    const lowStockItems = equipment.filter(e => {
+        // แบบเดิม: เช็คจาก status
+        if (e.status === 'low_stock' || e.status === 'out_of_stock') return true;
+        // แบบใหม่: เทียบกับ minStock ที่ตั้งไว้
+        if (e.minStock && e.minStock > 0 && e.availableQuantity <= e.minStock) return true;
+        // หมดสต็อก
+        if (e.availableQuantity <= 0) return true;
+        return false;
+    });
+
+    // แยกประเภท alert
+    const outOfStockItems = lowStockItems.filter(e => e.availableQuantity <= 0);
+    const belowMinStockItems = lowStockItems.filter(e => e.availableQuantity > 0 && e.minStock && e.availableQuantity <= e.minStock);
+
     const totalEquipment = equipment.length;
 
     if (loading) {
@@ -253,6 +270,40 @@ export default function EquipmentAnalysisPage() {
                     </div>
                 </div>
             </div>
+
+            {/* Low Stock Alert - Simple */}
+            {lowStockItems.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">⚠️</span>
+                            <span className="font-bold text-red-800">ต้องเติมสต็อก ({lowStockItems.length})</span>
+                        </div>
+                        <Link href="/equipment" className="text-sm text-red-600 hover:underline">
+                            ดูทั้งหมด →
+                        </Link>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {lowStockItems.slice(0, 8).map(item => (
+                            <Link
+                                key={item.id}
+                                href={`/equipment/${item.id}`}
+                                className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${item.availableQuantity <= 0
+                                    ? 'bg-red-500 text-white hover:bg-red-600'
+                                    : 'bg-orange-100 text-orange-700 hover:bg-orange-200'
+                                    }`}
+                            >
+                                {item.name} ({item.availableQuantity}/{item.quantity})
+                            </Link>
+                        ))}
+                        {lowStockItems.length > 8 && (
+                            <span className="px-3 py-1.5 bg-gray-100 text-gray-600 rounded-full text-sm">
+                                +{lowStockItems.length - 8} รายการ
+                            </span>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Location Summary */}
             {locations.length > 0 && (
@@ -399,29 +450,7 @@ export default function EquipmentAnalysisPage() {
                 </div>
             </div>
 
-            {/* Low Stock Alert */}
-            {lowStockItems.length > 0 && (
-                <div className="mt-6 bg-red-50 rounded-xl border border-red-200 p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                        <Icons.ExclamationTriangle className="w-5 h-5 text-red-600" />
-                        <h2 className="font-bold text-red-800">อุปกรณ์ที่ใกล้หมด/หมด ({lowStockItems.length})</h2>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {lowStockItems.map(item => (
-                            <Link
-                                key={item.id}
-                                href={`/equipment/${item.id}`}
-                                className="bg-white rounded-lg p-3 border border-red-200 hover:border-red-400 transition-colors"
-                            >
-                                <div className="font-medium text-gray-900">{item.name}</div>
-                                <div className="text-sm text-red-600 mt-1">
-                                    คงเหลือ: {item.availableQuantity || 0}/{item.quantity || 0} {item.unit}
-                                </div>
-                            </Link>
-                        ))}
-                    </div>
-                </div>
-            )}
+
         </div>
     );
 }

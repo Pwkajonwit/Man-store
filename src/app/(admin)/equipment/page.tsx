@@ -20,6 +20,7 @@ interface Equipment {
     availableQuantity: number;
     quantity: number;
     unit: string;
+    minStock?: number;
 }
 
 interface RepairReport {
@@ -624,7 +625,20 @@ export default function EquipmentPage() {
 
     // Filter equipment
     const filteredEquipment = equipment.filter(item => {
-        const matchType = activeTab === 'all' || item.type === activeTab;
+        // Tab filter
+        let matchType = false;
+        if (activeTab === 'all') {
+            matchType = true;
+        } else if (activeTab === 'low_stock') {
+            // ใกล้หมด: เช็คจาก status หรือเทียบกับ minStock
+            matchType = item.status === 'low_stock' ||
+                item.status === 'out_of_stock' ||
+                (item.minStock && item.minStock > 0 && (item.availableQuantity || 0) <= item.minStock) ||
+                (item.availableQuantity || 0) <= 0;
+        } else {
+            matchType = item.type === activeTab;
+        }
+
         const matchCategory = categoryFilter === 'all' || item.category === categoryFilter;
         const matchLocation = locationFilter === 'all' || item.location === locationFilter;
         const matchSearch = !searchQuery ||
@@ -637,6 +651,14 @@ export default function EquipmentPage() {
     const borrowableCount = equipment.filter(item => item.type === 'borrowable').length;
     const consumableCount = equipment.filter(item => item.type === 'consumable').length;
 
+    // Low stock items
+    const lowStockItems = equipment.filter(item => {
+        if (item.status === 'low_stock' || item.status === 'out_of_stock') return true;
+        if (item.minStock && item.minStock > 0 && (item.availableQuantity || 0) <= item.minStock) return true;
+        if ((item.availableQuantity || 0) <= 0) return true;
+        return false;
+    });
+
     return (
         <div className="max-w-7xl mx-auto">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
@@ -644,7 +666,16 @@ export default function EquipmentPage() {
                     <h1 className="text-2xl font-bold text-gray-900">อุปกรณ์ช่าง</h1>
                     <p className="text-gray-500 text-sm mt-1">จัดการอุปกรณ์และวัสดุสำหรับยืม-คืน และเบิก</p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                    <Link
+                        href="/stock-history"
+                        className="inline-flex items-center justify-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
+                    >
+                        <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        ประวัติเติมสต็อก
+                    </Link>
                     <button
                         onClick={() => setShowCsvModal(true)}
                         className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
@@ -857,10 +888,10 @@ export default function EquipmentPage() {
             )}
 
             {/* Tabs */}
-            <div className="flex gap-2 mb-4 border-b border-gray-200">
+            <div className="flex gap-2 mb-4 border-b border-gray-200 overflow-x-auto">
                 <button
                     onClick={() => setActiveTab('all')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'all'
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'all'
                         ? 'border-teal-600 text-teal-600'
                         : 'border-transparent text-gray-500 hover:text-gray-700'
                         }`}
@@ -869,7 +900,7 @@ export default function EquipmentPage() {
                 </button>
                 <button
                     onClick={() => setActiveTab('borrowable')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'borrowable'
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'borrowable'
                         ? 'border-blue-600 text-blue-600'
                         : 'border-transparent text-gray-500 hover:text-gray-700'
                         }`}
@@ -881,7 +912,7 @@ export default function EquipmentPage() {
                 </button>
                 <button
                     onClick={() => setActiveTab('consumable')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'consumable'
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'consumable'
                         ? 'border-purple-600 text-purple-600'
                         : 'border-transparent text-gray-500 hover:text-gray-700'
                         }`}
@@ -891,6 +922,23 @@ export default function EquipmentPage() {
                         เบิก ({consumableCount})
                     </span>
                 </button>
+                {lowStockItems.length > 0 && (
+                    <button
+                        onClick={() => setActiveTab('low_stock')}
+                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'low_stock'
+                            ? 'border-red-600 text-red-600'
+                            : 'border-transparent text-red-500 hover:text-red-700'
+                            }`}
+                    >
+                        <span className="inline-flex items-center gap-1">
+                            ⚠️ ใกล้หมด
+                            <span className={`px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'low_stock' ? 'bg-red-600 text-white' : 'bg-red-100 text-red-700'
+                                }`}>
+                                {lowStockItems.length}
+                            </span>
+                        </span>
+                    </button>
+                )}
             </div>
 
             {/* Search & Category Filter */}
