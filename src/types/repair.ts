@@ -1,4 +1,4 @@
-export type RepairStatus = 'pending' | 'in_progress' | 'completed' | 'rejected' | 'cancelled';
+export type RepairStatus = 'pending' | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'write_off';
 
 export interface Repair {
     id: string;
@@ -12,6 +12,7 @@ export interface Repair {
     // Cost & Tech
     cost?: number;
     technician?: string;
+    quantity?: number; // จำนวนที่ซ่อม
 
     reporterName?: string;
     reportedBy?: string; // Line ID or User ID

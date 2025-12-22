@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, onSnapshot, query, doc, deleteDoc } from "firebase/firestore";
+import { collection, onSnapshot, query, doc, deleteDoc, updateDoc, getDoc, getDocs, addDoc, Timestamp, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Link from "next/link";
 import Image from 'next/image';
@@ -135,10 +135,11 @@ function ActionButton({ href, onClick, icon: Icon, colorClass, label }: ActionBu
 interface EquipmentTableProps {
     equipment: Equipment[];
     onDelete: (id: string) => void;
+    onRestock: (eq: Equipment) => void;
     repairReports: RepairReport[];
 }
 
-function EquipmentTable({ equipment, onDelete, repairReports }: EquipmentTableProps) {
+function EquipmentTable({ equipment, onDelete, onRestock, repairReports }: EquipmentTableProps) {
     return (
         <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <table className="min-w-full divide-y divide-gray-200">
@@ -213,6 +214,7 @@ function EquipmentTable({ equipment, onDelete, repairReports }: EquipmentTablePr
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                     <div className="flex justify-end gap-2">
+                                        <ActionButton onClick={() => onRestock(item)} icon={Icons.Plus} colorClass="bg-green-50 text-green-600 hover:bg-green-100" label="เติมสต็อก" />
                                         <ActionButton href={`/equipment/${item.id}`} icon={Icons.PencilSquare} colorClass="bg-teal-50 text-teal-600 hover:bg-teal-100" label="แก้ไข" />
                                         <ActionButton href={`/equipment/${item.id}/history`} icon={Icons.Eye} colorClass="bg-blue-50 text-blue-600 hover:bg-blue-100" label="ประวัติ" />
                                         <ActionButton onClick={() => onDelete(item.id)} icon={Icons.Trash} colorClass="bg-red-50 text-red-600 hover:bg-red-100" label="ลบ" />
@@ -227,7 +229,7 @@ function EquipmentTable({ equipment, onDelete, repairReports }: EquipmentTablePr
     );
 }
 
-function EquipmentCards({ equipment, onDelete, repairReports }: EquipmentTableProps) {
+function EquipmentCards({ equipment, onDelete, onRestock, repairReports }: EquipmentTableProps) {
     return (
         <div className="md:hidden grid grid-cols-1 gap-4">
             {equipment.map((item) => {
@@ -287,7 +289,11 @@ function EquipmentCards({ equipment, onDelete, repairReports }: EquipmentTablePr
                             </div>
                         )}
 
-                        <div className="mt-4 pt-3 border-t border-gray-50 grid grid-cols-3 gap-2">
+                        <div className="mt-4 pt-3 border-t border-gray-50 grid grid-cols-4 gap-2">
+                            <button onClick={() => onRestock(item)} className="flex flex-col items-center justify-center p-2 rounded bg-green-50 text-green-600 hover:bg-green-100">
+                                <Icons.Plus className="w-4 h-4" />
+                                <span className="text-[10px] mt-1">เติม</span>
+                            </button>
                             <Link href={`/equipment/${item.id}`} className="flex flex-col items-center justify-center p-2 rounded bg-gray-50 text-gray-600 hover:bg-gray-100">
                                 <Icons.PencilSquare className="w-4 h-4" />
                                 <span className="text-[10px] mt-1">แก้ไข</span>
@@ -323,6 +329,16 @@ export default function EquipmentPage() {
     const [csvFile, setCsvFile] = useState<File | null>(null);
     const [csvPreview, setCsvPreview] = useState<any[]>([]);
     const [csvImporting, setCsvImporting] = useState(false);
+    const [csvMode, setCsvMode] = useState<'import' | 'restock'>('import'); // import = เพิ่มใหม่, restock = เติมสต็อก
+    const [duplicateAction, setDuplicateAction] = useState<'skip' | 'update'>('skip');
+    const [importLog, setImportLog] = useState<{ name: string; status: 'success' | 'skip' | 'error'; message: string }[]>([]);
+
+    // Restock Modal States
+    const [showRestockModal, setShowRestockModal] = useState(false);
+    const [restockEquipment, setRestockEquipment] = useState<Equipment | null>(null);
+    const [restockQuantity, setRestockQuantity] = useState('');
+    const [restockNote, setRestockNote] = useState('');
+    const [restocking, setRestocking] = useState(false);
 
     useEffect(() => {
         if (!db) return;
@@ -370,11 +386,11 @@ export default function EquipmentPage() {
     // --- CSV Import Functions ---
     const downloadSampleCsv = () => {
         const sampleData = [
-            ['name', 'code', 'type', 'category', 'location', 'quantity', 'unit', 'description'],
-            ['สว่านไฟฟ้า', 'DRILL-001', 'borrowable', 'เครื่องมือไฟฟ้า', 'ห้องเก็บของ A', '5', 'ตัว', 'สว่านไฟฟ้า Bosch 500W'],
-            ['ประแจ 10 นิ้ว', 'WRENCH-001', 'borrowable', 'เครื่องมือช่าง', 'ห้องเก็บของ A', '10', 'อัน', 'ประแจปากตาย'],
-            ['น็อตสกรู M8', 'SCREW-M8', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '500', 'ตัว', 'น็อตสกรู M8 x 30mm'],
-            ['เทปพันสายไฟ', 'TAPE-001', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '50', 'ม้วน', 'เทปพันสายไฟสีดำ'],
+            ['name', 'code', 'type', 'category', 'location', 'quantity', 'unit', 'minstock', 'description'],
+            ['สว่านไฟฟ้า', 'DRILL-001', 'borrowable', 'เครื่องมือไฟฟ้า', 'ห้องเก็บของ A', '5', 'ตัว', '2', 'สว่านไฟฟ้า Bosch 500W'],
+            ['ประแจ 10 นิ้ว', 'WRENCH-001', 'borrowable', 'เครื่องมือช่าง', 'ห้องเก็บของ A', '10', 'อัน', '3', 'ประแจปากตาย'],
+            ['น็อตสกรู M8', 'SCREW-M8', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '500', 'ตัว', '50', 'น็อตสกรู M8 x 30mm'],
+            ['เทปพันสายไฟ', 'TAPE-001', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '50', 'ม้วน', '10', 'เทปพันสายไฟสีดำ'],
         ];
         const csvContent = sampleData.map(row => row.join(',')).join('\n');
         const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' }); // BOM for Thai support
@@ -428,44 +444,178 @@ export default function EquipmentPage() {
         if (!db) return;
 
         setCsvImporting(true);
-        let success = 0, fail = 0;
+        setImportLog([]);
+        const logs: { name: string; status: 'success' | 'skip' | 'error'; message: string }[] = [];
 
-        const { addDoc, collection: firestoreCollection, Timestamp } = await import('firebase/firestore');
+        try {
+            // ดึงรายการอุปกรณ์ทั้งหมดเพื่อเช็คซ้ำ
+            const existingEquipment = new Map<string, { id: string; name: string; code: string; quantity: number; availableQuantity: number }>();
+            equipment.forEach(e => {
+                if (e.name) existingEquipment.set(e.name.toLowerCase(), { id: e.id, name: e.name, code: e.code || '', quantity: e.quantity, availableQuantity: e.availableQuantity });
+                if (e.code) existingEquipment.set(e.code.toLowerCase(), { id: e.id, name: e.name, code: e.code, quantity: e.quantity, availableQuantity: e.availableQuantity });
+            });
 
-        for (const item of csvPreview) {
-            try {
+            for (const item of csvPreview) {
+                const itemName = item.name?.toLowerCase() || '';
+                const itemCode = item.code?.toLowerCase() || '';
                 const qty = parseInt(item.quantity) || 0;
-                await addDoc(firestoreCollection(db, 'equipment'), {
-                    name: item.name,
-                    code: item.code || '',
-                    type: item.type === 'consumable' ? 'consumable' : 'borrowable',
-                    category: item.category || '',
-                    location: item.location || '',
-                    quantity: qty,
-                    availableQuantity: qty,
-                    unit: item.unit || 'ชิ้น',
-                    description: item.description || '',
-                    status: 'available',
-                    createdAt: Timestamp.now(),
-                    updatedAt: Timestamp.now(),
-                });
-                success++;
-            } catch (err) {
-                console.error('Import error:', err);
-                fail++;
+
+                // เช็คซ้ำด้วยชื่อหรือรหัส
+                const existingByName = existingEquipment.get(itemName);
+                const existingByCode = itemCode ? existingEquipment.get(itemCode) : null;
+                const existing = existingByCode || existingByName;
+
+                if (csvMode === 'restock') {
+                    // โหมดเติมสต็อก
+                    if (existing) {
+                        try {
+                            const newQuantity = existing.quantity + qty;
+                            const newAvailable = existing.availableQuantity + qty;
+                            await updateDoc(doc(db as any, 'equipment', existing.id), {
+                                quantity: newQuantity,
+                                availableQuantity: newAvailable,
+                                status: 'available',
+                                updatedAt: Timestamp.now()
+                            });
+                            // บันทึกประวัติการเติมสต็อก
+                            await addDoc(collection(db as any, 'stock-history'), {
+                                equipmentId: existing.id,
+                                equipmentName: existing.name,
+                                type: 'restock',
+                                quantity: qty,
+                                note: `นำเข้าจาก CSV`,
+                                previousQuantity: existing.quantity,
+                                newQuantity: newQuantity,
+                                createdAt: Timestamp.now()
+                            });
+                            logs.push({ name: item.name, status: 'success', message: `เติม +${qty} (รวม ${newQuantity})` });
+                        } catch (err) {
+                            logs.push({ name: item.name, status: 'error', message: 'เกิดข้อผิดพลาด' });
+                        }
+                    } else {
+                        logs.push({ name: item.name, status: 'skip', message: 'ไม่พบอุปกรณ์นี้ในระบบ' });
+                    }
+                } else {
+                    // โหมดนำเข้าใหม่
+                    if (existing) {
+                        if (duplicateAction === 'skip') {
+                            logs.push({ name: item.name, status: 'skip', message: 'ข้ามเพราะมีอยู่แล้ว' });
+                            continue;
+                        } else {
+                            // อัพเดทข้อมูลที่มีอยู่
+                            try {
+                                await updateDoc(doc(db as any, 'equipment', existing.id), {
+                                    code: item.code || existing.code,
+                                    type: item.type === 'consumable' ? 'consumable' : 'borrowable',
+                                    category: item.category || '',
+                                    location: item.location || '',
+                                    quantity: qty,
+                                    availableQuantity: qty,
+                                    unit: item.unit || 'ชิ้น',
+                                    minStock: parseInt(item.minstock) || 0,
+                                    description: item.description || '',
+                                    updatedAt: Timestamp.now()
+                                });
+                                logs.push({ name: item.name, status: 'success', message: 'อัพเดทข้อมูลแล้ว' });
+                            } catch (err) {
+                                logs.push({ name: item.name, status: 'error', message: 'เกิดข้อผิดพลาด' });
+                            }
+                        }
+                    } else {
+                        // เพิ่มใหม่
+                        try {
+                            await addDoc(collection(db as any, 'equipment'), {
+                                name: item.name,
+                                code: item.code || '',
+                                type: item.type === 'consumable' ? 'consumable' : 'borrowable',
+                                category: item.category || '',
+                                location: item.location || '',
+                                quantity: qty,
+                                availableQuantity: qty,
+                                unit: item.unit || 'ชิ้น',
+                                minStock: parseInt(item.minstock) || 0,
+                                description: item.description || '',
+                                status: 'available',
+                                createdAt: Timestamp.now(),
+                                updatedAt: Timestamp.now()
+                            });
+                            logs.push({ name: item.name, status: 'success', message: 'เพิ่มใหม่สำเร็จ' });
+                        } catch (err) {
+                            logs.push({ name: item.name, status: 'error', message: 'เกิดข้อผิดพลาด' });
+                        }
+                    }
+                }
             }
+        } catch (err) {
+            console.error('Import error:', err);
         }
 
+        setImportLog(logs);
         setCsvImporting(false);
-        setShowCsvModal(false);
-        setCsvFile(null);
-        setCsvPreview([]);
 
-        if (fail === 0) {
-            showAlert(`นำเข้าสำเร็จ ${success} รายการ`, 'success');
+        const successCount = logs.filter(l => l.status === 'success').length;
+        const skipCount = logs.filter(l => l.status === 'skip').length;
+        const errorCount = logs.filter(l => l.status === 'error').length;
+
+        if (errorCount === 0 && skipCount === 0) {
+            showAlert(`${csvMode === 'restock' ? 'เติมสต็อก' : 'นำเข้า'}สำเร็จ ${successCount} รายการ`, 'success');
+            setShowCsvModal(false);
+            setCsvFile(null);
+            setCsvPreview([]);
+            setImportLog([]);
         } else {
-            showAlert(`สำเร็จ ${success} รายการ, ล้มเหลว ${fail} รายการ`, 'warning');
+            showAlert(`สำเร็จ ${successCount}, ข้าม ${skipCount}, ผิดพลาด ${errorCount}`, 'warning');
         }
+    };
+
+    // ฟังก์ชันเติมสต็อกเดี่ยว
+    const openRestockModal = (eq: Equipment) => {
+        setRestockEquipment(eq);
+        setRestockQuantity('');
+        setRestockNote('');
+        setShowRestockModal(true);
+    };
+
+    const handleRestock = async () => {
+        if (!restockEquipment || !db) return;
+        const qty = parseInt(restockQuantity);
+        if (!qty || qty <= 0) {
+            showAlert('กรุณาระบุจำนวนที่ถูกต้อง', 'warning');
+            return;
+        }
+
+        setRestocking(true);
+        try {
+            const newQuantity = restockEquipment.quantity + qty;
+            const newAvailable = restockEquipment.availableQuantity + qty;
+
+            await updateDoc(doc(db as any, 'equipment', restockEquipment.id), {
+                quantity: newQuantity,
+                availableQuantity: newAvailable,
+                status: 'available',
+                updatedAt: Timestamp.now()
+            });
+
+            // บันทึกประวัติการเติมสต็อก
+            await addDoc(collection(db as any, 'stock-history'), {
+                equipmentId: restockEquipment.id,
+                equipmentName: restockEquipment.name,
+                type: 'restock',
+                quantity: qty,
+                note: restockNote || 'เติมสต็อก',
+                previousQuantity: restockEquipment.quantity,
+                newQuantity: newQuantity,
+                createdAt: Timestamp.now()
+            });
+
+            showAlert(`เติมสต็อก ${restockEquipment.name} +${qty} ${restockEquipment.unit} สำเร็จ`, 'success');
+            setShowRestockModal(false);
+            setRestockEquipment(null);
+        } catch (err) {
+            console.error('Restock error:', err);
+            showAlert('เกิดข้อผิดพลาดในการเติมสต็อก', 'error');
+        }
+        setRestocking(false);
     };
 
     // Get unique categories and locations
@@ -517,14 +667,72 @@ export default function EquipmentPage() {
             {/* CSV Import Modal */}
             {showCsvModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center">
-                    <div className="absolute inset-0 bg-black/50" onClick={() => { setShowCsvModal(false); setCsvFile(null); setCsvPreview([]); }} />
+                    <div className="absolute inset-0 bg-black/50" onClick={() => { setShowCsvModal(false); setCsvFile(null); setCsvPreview([]); setImportLog([]); }} />
                     <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
                         <div className="p-5 border-b border-gray-100">
-                            <h3 className="text-lg font-bold text-gray-900">นำเข้าอุปกรณ์จาก CSV</h3>
-                            <p className="text-sm text-gray-500 mt-1">อัพโหลดไฟล์ CSV เพื่อเพิ่มอุปกรณ์หลายรายการพร้อมกัน</p>
+                            <h3 className="text-lg font-bold text-gray-900">
+                                {csvMode === 'restock' ? 'เติมสต็อกจาก CSV' : 'นำเข้าอุปกรณ์จาก CSV'}
+                            </h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                                {csvMode === 'restock'
+                                    ? 'อัพโหลด CSV เพื่อเติมจำนวนสต็อกหลายรายการพร้อมกัน'
+                                    : 'อัพโหลดไฟล์ CSV เพื่อเพิ่มอุปกรณ์หลายรายการพร้อมกัน'}
+                            </p>
                         </div>
 
                         <div className="p-5 overflow-y-auto max-h-[calc(90vh-200px)]">
+                            {/* Mode Selection */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-2">โหมด</label>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setCsvMode('import')}
+                                        className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium border-2 transition-all ${csvMode === 'import'
+                                            ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                            }`}
+                                    >
+                                        📦 นำเข้าอุปกรณ์ใหม่
+                                    </button>
+                                    <button
+                                        onClick={() => setCsvMode('restock')}
+                                        className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium border-2 transition-all ${csvMode === 'restock'
+                                            ? 'border-green-500 bg-green-50 text-green-700'
+                                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                            }`}
+                                    >
+                                        ➕ เติมสต็อก
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Duplicate Action (only for import mode) */}
+                            {csvMode === 'import' && (
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">ถ้าพบข้อมูลซ้ำ (ชื่อ/รหัสเดียวกัน)</label>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => setDuplicateAction('skip')}
+                                            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-all ${duplicateAction === 'skip'
+                                                ? 'border-orange-400 bg-orange-50 text-orange-700'
+                                                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                                }`}
+                                        >
+                                            ⏭️ ข้าม
+                                        </button>
+                                        <button
+                                            onClick={() => setDuplicateAction('update')}
+                                            className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium border transition-all ${duplicateAction === 'update'
+                                                ? 'border-purple-400 bg-purple-50 text-purple-700'
+                                                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                                                }`}
+                                        >
+                                            🔄 อัพเดท
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
                             {/* Download Sample */}
                             <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
                                 <div className="flex items-start gap-3">
@@ -532,8 +740,14 @@ export default function EquipmentPage() {
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     <div className="flex-1">
-                                        <p className="text-sm text-blue-800 font-medium">ต้องการตัวอย่างไฟล์?</p>
-                                        <p className="text-xs text-blue-600 mt-1">ดาวน์โหลดไฟล์ตัวอย่างเพื่อดูรูปแบบที่ถูกต้อง</p>
+                                        <p className="text-sm text-blue-800 font-medium">
+                                            {csvMode === 'restock' ? 'รูปแบบไฟล์เติมสต็อก' : 'ต้องการตัวอย่างไฟล์?'}
+                                        </p>
+                                        <p className="text-xs text-blue-600 mt-1">
+                                            {csvMode === 'restock'
+                                                ? 'ต้องมีคอลัมน์: name หรือ code และ quantity (จำนวนที่จะเติม)'
+                                                : 'ดาวน์โหลดไฟล์ตัวอย่างเพื่อดูรูปแบบที่ถูกต้อง'}
+                                        </p>
                                         <button
                                             onClick={downloadSampleCsv}
                                             className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700"
@@ -560,42 +774,62 @@ export default function EquipmentPage() {
 
                             {/* Preview */}
                             {csvPreview.length > 0 && (
-                                <div>
+                                <div className="mb-4">
                                     <div className="flex items-center justify-between mb-2">
                                         <h4 className="text-sm font-medium text-gray-700">ตัวอย่างข้อมูล ({csvPreview.length} รายการ)</h4>
                                     </div>
-                                    <div className="border border-gray-200 rounded-lg overflow-hidden max-h-60 overflow-y-auto">
+                                    <div className="border border-gray-200 rounded-lg overflow-hidden max-h-40 overflow-y-auto">
                                         <table className="min-w-full divide-y divide-gray-200 text-xs">
                                             <thead className="bg-gray-50 sticky top-0">
                                                 <tr>
                                                     <th className="px-3 py-2 text-left font-medium text-gray-500">ชื่อ</th>
                                                     <th className="px-3 py-2 text-left font-medium text-gray-500">รหัส</th>
-                                                    <th className="px-3 py-2 text-left font-medium text-gray-500">ประเภท</th>
-                                                    <th className="px-3 py-2 text-left font-medium text-gray-500">จำนวน</th>
-                                                    <th className="px-3 py-2 text-left font-medium text-gray-500">หน่วย</th>
+                                                    <th className="px-3 py-2 text-left font-medium text-gray-500">
+                                                        {csvMode === 'restock' ? 'จำนวนที่เติม' : 'จำนวน'}
+                                                    </th>
                                                 </tr>
                                             </thead>
                                             <tbody className="bg-white divide-y divide-gray-100">
-                                                {csvPreview.slice(0, 10).map((item, idx) => (
+                                                {csvPreview.slice(0, 5).map((item, idx) => (
                                                     <tr key={idx}>
                                                         <td className="px-3 py-2 text-gray-900">{item.name}</td>
                                                         <td className="px-3 py-2 text-gray-500">{item.code || '-'}</td>
-                                                        <td className="px-3 py-2">
-                                                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${item.type === 'consumable' ? 'bg-purple-50 text-purple-700' : 'bg-blue-50 text-blue-700'}`}>
-                                                                {item.type === 'consumable' ? 'เบิก' : 'ยืม-คืน'}
-                                                            </span>
+                                                        <td className="px-3 py-2 text-gray-900 font-medium">
+                                                            {csvMode === 'restock' ? `+${item.quantity}` : item.quantity}
                                                         </td>
-                                                        <td className="px-3 py-2 text-gray-900">{item.quantity}</td>
-                                                        <td className="px-3 py-2 text-gray-500">{item.unit}</td>
                                                     </tr>
                                                 ))}
                                             </tbody>
                                         </table>
-                                        {csvPreview.length > 10 && (
+                                        {csvPreview.length > 5 && (
                                             <div className="px-3 py-2 bg-gray-50 text-xs text-gray-500 text-center">
-                                                ... และอีก {csvPreview.length - 10} รายการ
+                                                ... และอีก {csvPreview.length - 5} รายการ
                                             </div>
                                         )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Import Log */}
+                            {importLog.length > 0 && (
+                                <div className="mb-4">
+                                    <h4 className="text-sm font-medium text-gray-700 mb-2">ผลลัพธ์การนำเข้า</h4>
+                                    <div className="border border-gray-200 rounded-lg max-h-40 overflow-y-auto">
+                                        {importLog.map((log, idx) => (
+                                            <div key={idx} className={`px-3 py-2 text-xs flex items-center gap-2 ${log.status === 'success' ? 'bg-green-50' :
+                                                log.status === 'skip' ? 'bg-yellow-50' : 'bg-red-50'
+                                                }`}>
+                                                <span className={`font-medium ${log.status === 'success' ? 'text-green-700' :
+                                                    log.status === 'skip' ? 'text-yellow-700' : 'text-red-700'
+                                                    }`}>
+                                                    {log.status === 'success' ? '✓' : log.status === 'skip' ? '⏭' : '✗'}
+                                                </span>
+                                                <span className="text-gray-800 flex-1">{log.name}</span>
+                                                <span className={`${log.status === 'success' ? 'text-green-600' :
+                                                    log.status === 'skip' ? 'text-yellow-600' : 'text-red-600'
+                                                    }`}>{log.message}</span>
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
                             )}
@@ -603,17 +837,19 @@ export default function EquipmentPage() {
 
                         <div className="p-5 border-t border-gray-100 flex gap-3">
                             <button
-                                onClick={() => { setShowCsvModal(false); setCsvFile(null); setCsvPreview([]); }}
+                                onClick={() => { setShowCsvModal(false); setCsvFile(null); setCsvPreview([]); setImportLog([]); }}
                                 className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition-colors"
                             >
-                                ยกเลิก
+                                {importLog.length > 0 ? 'ปิด' : 'ยกเลิก'}
                             </button>
                             <button
                                 onClick={handleCsvImport}
                                 disabled={csvPreview.length === 0 || csvImporting}
-                                className="flex-1 py-2.5 bg-teal-600 text-white rounded-xl font-medium hover:bg-teal-700 disabled:opacity-50 transition-colors"
+                                className={`flex-1 py-2.5 text-white rounded-xl font-medium disabled:opacity-50 transition-colors ${csvMode === 'restock' ? 'bg-green-600 hover:bg-green-700' : 'bg-teal-600 hover:bg-teal-700'
+                                    }`}
                             >
-                                {csvImporting ? 'กำลังนำเข้า...' : `นำเข้า ${csvPreview.length} รายการ`}
+                                {csvImporting ? 'กำลังดำเนินการ...' :
+                                    csvMode === 'restock' ? `เติมสต็อก ${csvPreview.length} รายการ` : `นำเข้า ${csvPreview.length} รายการ`}
                             </button>
                         </div>
                     </div>
@@ -720,9 +956,87 @@ export default function EquipmentPage() {
                 </div>
             ) : (
                 <>
-                    <EquipmentTable equipment={filteredEquipment} onDelete={handleDelete} repairReports={repairReports} />
-                    <EquipmentCards equipment={filteredEquipment} onDelete={handleDelete} repairReports={repairReports} />
+                    <EquipmentTable equipment={filteredEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
+                    <EquipmentCards equipment={filteredEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
                 </>
+            )}
+
+            {/* Restock Modal */}
+            {showRestockModal && restockEquipment && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center">
+                    <div className="absolute inset-0 bg-black/50" onClick={() => setShowRestockModal(false)} />
+                    <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+                        <div className="p-5 border-b border-gray-100">
+                            <h3 className="text-lg font-bold text-gray-900">เติมสต็อก</h3>
+                            <p className="text-sm text-gray-500 mt-1">{restockEquipment.name}</p>
+                        </div>
+
+                        <div className="p-5 space-y-4">
+                            {/* Current Stock Info */}
+                            <div className="p-3 bg-gray-50 rounded-lg">
+                                <div className="text-sm text-gray-600">จำนวนปัจจุบัน</div>
+                                <div className="text-xl font-bold text-gray-900">
+                                    {restockEquipment.availableQuantity} / {restockEquipment.quantity} {restockEquipment.unit}
+                                </div>
+                            </div>
+
+                            {/* Quantity Input */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    จำนวนที่เติม <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="number"
+                                    value={restockQuantity}
+                                    onChange={(e) => setRestockQuantity(e.target.value)}
+                                    placeholder="0"
+                                    min="1"
+                                    className="w-full px-4 py-3 border border-gray-200 rounded-xl text-lg font-semibold text-center focus:outline-none focus:ring-2 focus:ring-green-500"
+                                />
+                            </div>
+
+                            {/* Preview */}
+                            {restockQuantity && parseInt(restockQuantity) > 0 && (
+                                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                                    <div className="text-sm text-green-700">หลังเติม:</div>
+                                    <div className="text-xl font-bold text-green-800">
+                                        {restockEquipment.quantity + parseInt(restockQuantity)} {restockEquipment.unit}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Note */}
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    หมายเหตุ (ไม่บังคับ)
+                                </label>
+                                <input
+                                    type="text"
+                                    value={restockNote}
+                                    onChange={(e) => setRestockNote(e.target.value)}
+                                    placeholder="เช่น ซื้อเพิ่ม, รับของใหม่..."
+                                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="p-5 border-t border-gray-100 flex gap-3">
+                            <button
+                                onClick={() => setShowRestockModal(false)}
+                                className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition-colors"
+                            >
+                                ยกเลิก
+                            </button>
+                            <button
+                                onClick={handleRestock}
+                                disabled={!restockQuantity || parseInt(restockQuantity) <= 0 || restocking}
+                                className="flex-1 py-2.5 bg-green-600 text-white rounded-xl font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
+                            >
+                                {restocking ? 'กำลังบันทึก...' : `เติม +${restockQuantity || 0} ${restockEquipment.unit}`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

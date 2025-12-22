@@ -28,6 +28,7 @@ export default function RepairPage() {
     const [repairNote, setRepairNote] = useState('');
     const [repairCost, setRepairCost] = useState('');
     const [repairTechnician, setRepairTechnician] = useState('');
+    const [repairQuantity, setRepairQuantity] = useState(1);
     const [selectedEquipmentId, setSelectedEquipmentId] = useState('');
     const [saving, setSaving] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -39,7 +40,10 @@ export default function RepairPage() {
     useEffect(() => {
         if (!db) return;
         const unsubscribe = onSnapshot(collection(db as any, 'equipment'), (snapshot) => {
-            const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Equipment));
+            // กรองเฉพาะอุปกรณ์ borrowable (ไม่รวมวัสดุสิ้นเปลือง)
+            const items = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() } as Equipment))
+                .filter(item => item.type === 'borrowable' || !item.type); // รองรับกรณีไม่มี type
             setAllEquipment(items);
             setDamagedEquipment(items.filter(item => item.status === 'damaged'));
             setLoading(false);
@@ -61,6 +65,7 @@ export default function RepairPage() {
         setRepairNote('');
         setRepairCost('');
         setRepairTechnician('');
+        setRepairQuantity(1);
         setSelectedEquipmentId('');
         setSelectedItem(null);
         setSelectedRepair(null);
@@ -123,18 +128,36 @@ export default function RepairPage() {
         if (!equipment) { await showAlert('ไม่พบอุปกรณ์', 'error'); return; }
         setSaving(true);
         try {
+            // ตรวจสอบจำนวนที่ซ่อมไม่เกินจำนวนที่มี
+            const maxQty = equipment.availableQuantity || equipment.quantity || 1;
+            const qty = Math.min(repairQuantity, maxQty);
+
             await addDoc(collection(db as any, 'repairs'), {
                 equipmentId: equipment.id,
                 equipmentName: equipment.name,
                 equipmentImage: equipment.imageUrl || null,
                 status: 'in_progress',
                 note: repairNote,
+                quantity: qty,
                 cost: repairCost ? parseFloat(repairCost) : 0,
                 technician: repairTechnician,
                 createdAt: Timestamp.now(),
                 updatedAt: Timestamp.now(),
             });
-            await updateDoc(doc(db as any, 'equipment', equipment.id), { status: 'repairing', updatedAt: new Date() });
+
+            // ลด availableQuantity ตามจำนวนที่ซ่อม ถ้าอุปกรณ์ยังไม่ได้เป็น damaged มาก่อน
+            const equipmentRef = doc(db as any, 'equipment', equipment.id);
+            const equipmentSnap = await getDoc(equipmentRef);
+            const equipmentData = equipmentSnap.data();
+            const currentAvailable = equipmentData?.availableQuantity || equipmentData?.quantity || 1;
+            // ถ้าอุปกรณ์ยังเป็น available (ไม่ใช่ damaged) ให้ลด availableQuantity ตามจำนวนที่ซ่อม
+            const newAvailable = equipment.status !== 'damaged' ? Math.max(0, currentAvailable - qty) : currentAvailable;
+
+            await updateDoc(equipmentRef, {
+                status: 'repairing',
+                availableQuantity: newAvailable,
+                updatedAt: new Date()
+            });
 
             // อัพเดท repair-reports status เป็น in_progress
             try {
@@ -206,7 +229,21 @@ export default function RepairPage() {
                 completedAt: Timestamp.now(),
                 updatedAt: Timestamp.now(),
             });
-            await updateDoc(doc(db as any, 'equipment', repair.equipmentId), { status: 'available', updatedAt: new Date() });
+
+            // เพิ่ม availableQuantity กลับตามจำนวนที่ซ่อม
+            const repairQty = repair.quantity || 1;
+            const equipmentRef = doc(db as any, 'equipment', repair.equipmentId);
+            const equipmentSnap = await getDoc(equipmentRef);
+            const equipmentData = equipmentSnap.data();
+            const currentAvailable = equipmentData?.availableQuantity || 0;
+            const totalQuantity = equipmentData?.quantity || 1;
+            const newAvailable = Math.min(totalQuantity, currentAvailable + repairQty);
+
+            await updateDoc(equipmentRef, {
+                status: 'available',
+                availableQuantity: newAvailable,
+                updatedAt: new Date()
+            });
 
             // อัพเดทสถานะ repair-reports เป็น completed
             try {
@@ -314,6 +351,66 @@ export default function RepairPage() {
         setSaving(false);
     };
 
+    // ซ่อมไม่ได้ - ตัดออกจากระบบ (ยกเลิกใช้งานถาวร)
+    const writeOffRepair = async (repair: Repair) => {
+        if (!db) return;
+        if (!(await showConfirm('ซ่อมไม่ได้ใช่ไหม? อุปกรณ์จะถูกตัดออกจากระบบ (ยกเลิกใช้งานถาวร) และไม่สามารถยืมได้อีก'))) return;
+        setSaving(true);
+        try {
+            // อัพเดทสถานะการซ่อมเป็น write_off
+            await updateDoc(doc(db as any, 'repairs', repair.id), {
+                status: 'write_off',
+                completedAt: Timestamp.now(),
+                updatedAt: Timestamp.now(),
+                note: (repair.note || '') + ' [ซ่อมไม่ได้ - ตัดออก]'
+            });
+
+            // อัพเดทอุปกรณ์เป็น retired และ ลด quantity ตามจำนวนที่ซ่อม
+            const repairQty = repair.quantity || 1;
+            const equipmentRef = doc(db as any, 'equipment', repair.equipmentId);
+            const equipmentSnap = await getDoc(equipmentRef);
+            const equipmentData = equipmentSnap.data();
+            const currentQuantity = equipmentData?.quantity || 1;
+            const newQuantity = Math.max(0, currentQuantity - repairQty);
+            const currentAvailable = equipmentData?.availableQuantity || 0;
+
+            // ถ้าจำนวนเหลือ 0 = retired ทั้งหมด, ถ้ายังเหลือ = กลับเป็น available
+            const newStatus = newQuantity <= 0 ? 'retired' : 'available';
+
+            await updateDoc(equipmentRef, {
+                status: newStatus,
+                quantity: newQuantity,
+                availableQuantity: Math.min(newQuantity, currentAvailable), // ไม่เพิ่มกลับ
+                updatedAt: new Date()
+            });
+
+            // อัพเดท repair-reports สถานะ
+            try {
+                const reportsQuery = query(
+                    collection(db as any, 'repair-reports'),
+                    where('equipmentId', '==', repair.equipmentId)
+                );
+                const reportsSnap = await getDocs(reportsQuery);
+                for (const reportDoc of reportsSnap.docs) {
+                    const reportData = reportDoc.data();
+                    if (reportData.status !== 'completed' && reportData.status !== 'write_off') {
+                        await updateDoc(doc(db as any, 'repair-reports', reportDoc.id), {
+                            status: 'write_off',
+                            updatedAt: Timestamp.now()
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to update repair-reports:', e);
+            }
+
+            await showAlert('ตัดอุปกรณ์ออกจากระบบแล้ว', 'warning');
+        } catch (error: any) {
+            await showAlert('เกิดข้อผิดพลาด: ' + error.message, 'error');
+        }
+        setSaving(false);
+    };
+
     const openEditModal = (repair: Repair) => {
         setSelectedRepair(repair);
         setRepairNote(repair.note || '');
@@ -330,7 +427,7 @@ export default function RepairPage() {
     const filteredRepairs = repairs.filter(r => {
         if (activeTab === 'pending') return false;
         if (activeTab === 'in_progress') return r.status === 'in_progress';
-        if (activeTab === 'completed') return r.status === 'completed' || r.status === 'cancelled';
+        if (activeTab === 'completed') return r.status === 'completed' || r.status === 'cancelled' || r.status === 'write_off';
         return true;
     });
 
@@ -345,6 +442,7 @@ export default function RepairPage() {
             case 'in_progress': return <span className="px-2 py-1 bg-yellow-100 text-yellow-700 rounded-full text-xs font-medium">กำลังซ่อม</span>;
             case 'completed': return <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">ซ่อมเสร็จ</span>;
             case 'cancelled': return <span className="px-2 py-1 bg-red-100 text-red-700 rounded-full text-xs font-medium">ยกเลิก</span>;
+            case 'write_off': return <span className="px-2 py-1 bg-gray-600 text-white rounded-full text-xs font-medium">ซ่อมไม่ได้/ตัดออก</span>;
             default: return <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">{status}</span>;
         }
     };
@@ -524,7 +622,14 @@ export default function RepairPage() {
                                         </div>
                                     )}
                                     <div className="flex-1">
-                                        <div className="font-semibold text-gray-900">{repair.equipmentName}</div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-semibold text-gray-900">{repair.equipmentName}</span>
+                                            {repair.quantity && repair.quantity > 1 && (
+                                                <span className="px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs font-medium">
+                                                    {repair.quantity} ชิ้น
+                                                </span>
+                                            )}
+                                        </div>
                                         {repair.note && <div className="text-sm text-gray-500">{repair.note}</div>}
                                         <div className="flex gap-4 text-xs text-gray-500 mt-1">
                                             <span>เริ่มซ่อม: {formatDate(repair.createdAt)}</span>
@@ -555,7 +660,10 @@ export default function RepairPage() {
                                     <button onClick={() => completeRepair(repair)} disabled={saving} className="flex-1 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
                                         ✓ ซ่อมเสร็จ
                                     </button>
-                                    <button onClick={() => cancelRepair(repair)} disabled={saving} className="px-4 py-2 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 disabled:opacity-50">
+                                    <button onClick={() => writeOffRepair(repair)} disabled={saving} className="px-3 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 disabled:opacity-50" title="ซ่อมไม่ได้ - ตัดออกจากระบบ">
+                                        ✗ ซ่อมไม่ได้
+                                    </button>
+                                    <button onClick={() => cancelRepair(repair)} disabled={saving} className="px-3 py-2 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 disabled:opacity-50">
                                         ยกเลิก
                                     </button>
                                 </div>
@@ -773,6 +881,47 @@ export default function RepairPage() {
                         {selectedEquipmentId && (
                             <div className="p-4 bg-gray-50 border-t border-gray-100 space-y-3">
                                 <div className="text-sm font-medium text-gray-700">รายละเอียดการซ่อม</div>
+
+                                {/* จำนวนที่ซ่อม */}
+                                <div>
+                                    <label className="block text-xs font-medium text-gray-600 mb-1">จำนวนที่ต้องการซ่อม</label>
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => setRepairQuantity(Math.max(1, repairQuantity - 1))}
+                                            className="w-8 h-8 flex items-center justify-center bg-gray-200 rounded-lg text-gray-600 hover:bg-gray-300"
+                                        >
+                                            −
+                                        </button>
+                                        <input
+                                            type="number"
+                                            value={repairQuantity}
+                                            onChange={(e) => {
+                                                const val = parseInt(e.target.value) || 1;
+                                                const eq = allEquipment.find(eq => eq.id === selectedEquipmentId);
+                                                const max = eq?.availableQuantity || eq?.quantity || 1;
+                                                setRepairQuantity(Math.min(Math.max(1, val), max));
+                                            }}
+                                            min={1}
+                                            className="w-14 h-8 text-center border border-gray-200 rounded-lg text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const eq = allEquipment.find(eq => eq.id === selectedEquipmentId);
+                                                const max = eq?.availableQuantity || eq?.quantity || 1;
+                                                setRepairQuantity(Math.min(repairQuantity + 1, max));
+                                            }}
+                                            className="w-8 h-8 flex items-center justify-center bg-gray-200 rounded-lg text-gray-600 hover:bg-gray-300"
+                                        >
+                                            +
+                                        </button>
+                                        <span className="text-xs text-gray-500">
+                                            / {allEquipment.find(eq => eq.id === selectedEquipmentId)?.availableQuantity || allEquipment.find(eq => eq.id === selectedEquipmentId)?.quantity || 0} {allEquipment.find(eq => eq.id === selectedEquipmentId)?.unit || 'ชิ้น'}
+                                        </span>
+                                    </div>
+                                </div>
+
                                 <textarea
                                     value={repairNote}
                                     onChange={(e) => setRepairNote(e.target.value)}

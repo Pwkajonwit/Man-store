@@ -43,6 +43,7 @@ const Icons = {
 
 // Navigation items
 const navItems = [
+    { href: '/equipment-usage-realtime', label: 'ใช้งานอุปกรณ์', icon: Icons.Dashboard, match: ['/equipment-usage-realtime', '/equipment-usage-realtime'] },
     { href: '/equipment-analysis', label: 'ภาพรวม', icon: Icons.Dashboard, match: ['/equipment-analysis', '/dashboard'] },
     { href: '/equipment', label: 'จัดการอุปกรณ์', icon: Icons.Tool, match: ['/equipment'] },
     { href: '/repairs', label: 'ซ่อมอุปกรณ์', icon: Icons.Repair, match: ['/repairs'] },

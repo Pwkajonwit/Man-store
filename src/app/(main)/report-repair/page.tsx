@@ -26,7 +26,8 @@ interface RepairReport {
     equipmentImage?: string;
     category?: string;
     problemNote: string;
-    status: 'pending' | 'approved' | 'rejected' | 'in_progress' | 'completed';
+    quantity?: number;
+    status: 'pending' | 'approved' | 'rejected' | 'in_progress' | 'completed' | 'write_off';
     reportedBy: string;
     reporterName: string;
     createdAt: any;
@@ -42,6 +43,7 @@ export default function ReportRepairPage() {
     const [selectedEquipment, setSelectedEquipment] = useState<Equipment | null>(null);
     const [reportModal, setReportModal] = useState(false);
     const [problemNote, setProblemNote] = useState('');
+    const [repairQuantity, setRepairQuantity] = useState(1);
     const [submitting, setSubmitting] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filterCategory, setFilterCategory] = useState('');
@@ -49,14 +51,17 @@ export default function ReportRepairPage() {
     const { lineSettings } = useAppSettings();
     const userChatMessageEnabled = lineSettings.userChatMessage;
 
-    // โหลดอุปกรณ์ที่สถานะ available หรือ in_use
+    // โหลดอุปกรณ์ที่สถานะ available หรือ in_use (เฉพาะ borrowable - ไม่รวมวัสดุสิ้นเปลือง)
     useEffect(() => {
         if (!db) return;
         const unsubscribe = onSnapshot(collection(db as any, 'equipment'), (snapshot) => {
             const items = snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
-            } as Equipment)).filter(item => item.status === 'available' || item.status === 'in_use');
+            } as Equipment)).filter(item =>
+                (item.status === 'available' || item.status === 'in_use') &&
+                item.type === 'borrowable' // เฉพาะอุปกรณ์ยืม-คืน
+            );
             setEquipment(items);
             setLoading(false);
         });
@@ -105,12 +110,17 @@ export default function ReportRepairPage() {
 
         setSubmitting(true);
         try {
+            // ตรวจสอบจำนวนที่ซ่อมไม่เกินจำนวนที่มี
+            const maxQty = selectedEquipment.availableQuantity || selectedEquipment.quantity || 1;
+            const qty = Math.min(repairQuantity, maxQty);
+
             const reportData = {
                 equipmentId: selectedEquipment.id,
                 equipmentName: selectedEquipment.name,
                 equipmentImage: selectedEquipment.imageUrl || null,
                 category: selectedEquipment.category || '',
                 problemNote: problemNote.trim(),
+                quantity: qty,
                 status: 'pending', // pending, approved, rejected
                 reportedBy: userProfile?.lineId || user?.uid,
                 reporterName: userProfile?.name || 'ไม่ทราบชื่อ',
@@ -120,9 +130,16 @@ export default function ReportRepairPage() {
             // สร้างรายการแจ้งซ่อม
             await addDoc(collection(db as any, 'repair-reports'), reportData);
 
-            // อัพเดทสถานะอุปกรณ์เป็น damaged
-            await updateDoc(doc(db as any, 'equipment', selectedEquipment.id), {
+            // อัพเดทสถานะอุปกรณ์เป็น damaged และลด availableQuantity ตามจำนวนที่ซ่อม
+            const equipmentRef = doc(db as any, 'equipment', selectedEquipment.id);
+            const equipmentSnap = await getDoc(equipmentRef);
+            const equipmentData = equipmentSnap.data();
+            const currentAvailable = equipmentData?.availableQuantity || equipmentData?.quantity || 1;
+            const newAvailable = Math.max(0, currentAvailable - qty);
+
+            await updateDoc(equipmentRef, {
                 status: 'damaged',
+                availableQuantity: newAvailable,
                 updatedAt: new Date()
             });
 
@@ -177,6 +194,7 @@ export default function ReportRepairPage() {
             showAlert('แจ้งซ่อมสำเร็จ', 'success');
             setReportModal(false);
             setProblemNote('');
+            setRepairQuantity(1);
             setSelectedEquipment(null);
             setActiveView('my-reports');
         } catch (error: any) {
@@ -204,6 +222,8 @@ export default function ReportRepairPage() {
                 return <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">กำลังซ่อม</span>;
             case 'completed':
                 return <span className="px-2 py-1 bg-teal-100 text-teal-700 rounded-full text-xs font-medium">ซ่อมเสร็จแล้ว</span>;
+            case 'write_off':
+                return <span className="px-2 py-1 bg-gray-600 text-white rounded-full text-xs font-medium">ซ่อมไม่ได้/ตัดออก</span>;
             default:
                 return <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">{status}</span>;
         }
@@ -346,7 +366,14 @@ export default function ReportRepairPage() {
                                         )}
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-start justify-between gap-2">
-                                                <div className="font-medium text-gray-900 text-sm">{report.equipmentName}</div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium text-gray-900 text-sm">{report.equipmentName}</span>
+                                                    {report.quantity && report.quantity > 1 && (
+                                                        <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-[10px] font-medium">
+                                                            {report.quantity} ชิ้น
+                                                        </span>
+                                                    )}
+                                                </div>
                                                 {getStatusBadge(report.status)}
                                             </div>
                                             <div className="text-xs text-gray-500 mt-1">{report.category}</div>
@@ -387,6 +414,45 @@ export default function ReportRepairPage() {
                                 <div>
                                     <div className="font-medium text-gray-900">{selectedEquipment.name}</div>
                                     <div className="text-sm text-gray-500">{selectedEquipment.category}</div>
+                                </div>
+                            </div>
+
+                            {/* Quantity */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-2">จำนวนที่ต้องการซ่อม</label>
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setRepairQuantity(Math.max(1, repairQuantity - 1))}
+                                        className="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-lg text-gray-600 hover:bg-gray-200"
+                                    >
+                                        −
+                                    </button>
+                                    <input
+                                        type="number"
+                                        value={repairQuantity}
+                                        onChange={(e) => {
+                                            const val = parseInt(e.target.value) || 1;
+                                            const max = selectedEquipment.availableQuantity || selectedEquipment.quantity || 1;
+                                            setRepairQuantity(Math.min(Math.max(1, val), max));
+                                        }}
+                                        min={1}
+                                        max={selectedEquipment.availableQuantity || selectedEquipment.quantity || 1}
+                                        className="w-16 h-10 text-center border border-gray-200 rounded-lg text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            const max = selectedEquipment.availableQuantity || selectedEquipment.quantity || 1;
+                                            setRepairQuantity(Math.min(repairQuantity + 1, max));
+                                        }}
+                                        className="w-10 h-10 flex items-center justify-center bg-gray-100 rounded-lg text-gray-600 hover:bg-gray-200"
+                                    >
+                                        +
+                                    </button>
+                                    <span className="text-sm text-gray-500">
+                                        / {selectedEquipment.availableQuantity || selectedEquipment.quantity || 0} {selectedEquipment.unit || 'ชิ้น'}
+                                    </span>
                                 </div>
                             </div>
 
