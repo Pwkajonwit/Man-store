@@ -286,7 +286,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto py-8 px-4">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">ตั้งค่าระบบ</h1>
+                    <h1 className="text-2xl font-bold text-gray-900">ตั้งค่าระบบ 2</h1>
                     <p className="text-sm text-gray-500">กำหนดหมวดหมู่ ตำแหน่งจัดเก็บ และการแจ้งเตือน</p>
                 </div>
                 <div className="flex items-center gap-4">
@@ -716,3 +716,4 @@ export default function SettingsPage() {
         </div>
     );
 }
+
