@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { doc, getDoc, addDoc, collection, Timestamp } from "firebase/firestore";
+import { doc, getDoc, addDoc, collection, Timestamp, getDocs, query, where } from "firebase/firestore";
 import { db, storage } from "@/lib/firebase";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import Image from "next/image";
@@ -51,11 +51,45 @@ export default function AddEquipmentPage() {
     const [categories, setCategories] = useState<string[]>(['ทั่วไป']);
     const [locations, setLocations] = useState<string[]>([]);
 
-    // Load settings
+    // สร้างรหัสอุปกรณ์อัตโนมัติ โดยไม่ซ้ำ
+    const generateEquipmentCode = async (): Promise<string> => {
+        if (!db) return 'EQ-001';
+
+        try {
+            // ดึงอุปกรณ์ทั้งหมดเพื่อหารหัสล่าสุด
+            const equipmentSnap = await getDocs(collection(db, 'equipment'));
+
+            // หารหัสที่มีรูปแบบ EQ-XXX ทั้งหมด
+            const existingCodes: number[] = [];
+            equipmentSnap.docs.forEach(doc => {
+                const code = doc.data().code || '';
+                const match = code.match(/^EQ-(\d+)$/i);
+                if (match) {
+                    existingCodes.push(parseInt(match[1], 10));
+                }
+            });
+
+            // หาเลขถัดไปที่ไม่ซ้ำ
+            let nextNumber = 1;
+            if (existingCodes.length > 0) {
+                nextNumber = Math.max(...existingCodes) + 1;
+            }
+
+            // สร้างรหัส format EQ-001
+            return `EQ-${String(nextNumber).padStart(3, '0')}`;
+        } catch (error) {
+            console.error('Error generating code:', error);
+            return `EQ-${Date.now().toString().slice(-6)}`;
+        }
+    };
+
+    // Load settings and auto-generate code
     useEffect(() => {
         async function loadSettings() {
             try {
                 if (!db) return;
+
+                // Load categories and locations
                 const docRef = doc(db, "settings", "equipment");
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
@@ -63,6 +97,10 @@ export default function AddEquipmentPage() {
                     if (data.categories?.length) setCategories(data.categories);
                     if (data.locations?.length) setLocations(data.locations);
                 }
+
+                // Auto-generate equipment code
+                const autoCode = await generateEquipmentCode();
+                setFormData((prev: any) => ({ ...prev, code: autoCode }));
             } catch (error) {
                 console.error("Error loading settings:", error);
             }
@@ -128,7 +166,7 @@ export default function AddEquipmentPage() {
                 availableQuantity: quantity, // For new equipment, available = total
                 unit: formData.unit,
                 minStock: Number(formData.minStock),
-                imageUrl: formData.imageUrl || `https://placehold.co/600x400?text=${encodeURIComponent(formData.name)}`,
+                imageUrl: formData.imageUrl || null,
                 description: formData.description,
                 location: formData.location,
                 createdAt: Timestamp.now(),
@@ -225,15 +263,32 @@ export default function AddEquipmentPage() {
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">รหัสอุปกรณ์</label>
-                        <input
-                            type="text"
-                            name="code"
-                            value={formData.code}
-                            onChange={handleChange}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                            placeholder="เช่น EQ-001"
-                        />
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                            รหัสอุปกรณ์ <span className="text-xs text-gray-400">(สร้างอัตโนมัติ)</span>
+                        </label>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                name="code"
+                                value={formData.code}
+                                onChange={handleChange}
+                                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                placeholder="EQ-001"
+                            />
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    const newCode = await generateEquipmentCode();
+                                    setFormData((prev: any) => ({ ...prev, code: newCode }));
+                                }}
+                                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                                title="สร้างรหัสใหม่"
+                            >
+                                <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
 

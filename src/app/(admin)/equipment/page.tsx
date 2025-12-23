@@ -666,15 +666,15 @@ export default function EquipmentPage() {
                     <h1 className="text-2xl font-bold text-gray-900">อุปกรณ์ช่าง</h1>
                     <p className="text-gray-500 text-sm mt-1">จัดการอุปกรณ์และวัสดุสำหรับยืม-คืน และเบิก</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1">
                     <Link
                         href="/stock-history"
-                        className="inline-flex items-center justify-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
+                        className="inline-flex items-center justify-center px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
                     >
-                        <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
-                        ประวัติเติมสต็อก
+
                     </Link>
                     <button
                         onClick={() => setShowCsvModal(true)}
@@ -888,57 +888,72 @@ export default function EquipmentPage() {
             )}
 
             {/* Tabs */}
-            <div className="flex gap-2 mb-4 border-b border-gray-200 overflow-x-auto">
-                <button
-                    onClick={() => setActiveTab('all')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'all'
-                        ? 'border-teal-600 text-teal-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                        }`}
-                >
-                    ทั้งหมด ({equipment.length})
-                </button>
-                <button
-                    onClick={() => setActiveTab('borrowable')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'borrowable'
-                        ? 'border-blue-600 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                        }`}
-                >
-                    <span className="inline-flex items-center gap-1">
-                        <Icons.Repeat className="w-4 h-4" />
-                        ยืม-คืน ({borrowableCount})
-                    </span>
-                </button>
-                <button
-                    onClick={() => setActiveTab('consumable')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'consumable'
-                        ? 'border-purple-600 text-purple-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700'
-                        }`}
-                >
-                    <span className="inline-flex items-center gap-1">
-                        <Icons.Box className="w-4 h-4" />
-                        เบิก ({consumableCount})
-                    </span>
-                </button>
-                {lowStockItems.length > 0 && (
+            <div className="relative mb-4">
+                <div className="flex gap-1 md:gap-2 border-b border-gray-200 overflow-x-auto scrollbar-hide pb-px" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                    <style jsx>{`
+                        div::-webkit-scrollbar {
+                            display: none;
+                        }
+                    `}</style>
                     <button
-                        onClick={() => setActiveTab('low_stock')}
-                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === 'low_stock'
-                            ? 'border-red-600 text-red-600'
-                            : 'border-transparent text-red-500 hover:text-red-700'
+                        onClick={() => setActiveTab('all')}
+                        className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${activeTab === 'all'
+                            ? 'border-teal-600 text-teal-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'
+                            }`}
+                    >
+                        ทั้งหมด <span className="hidden sm:inline">({equipment.length})</span>
+                        <span className="sm:hidden ml-1 px-1.5 py-0.5 bg-gray-100 rounded text-[10px]">{equipment.length}</span>
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('borrowable')}
+                        className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${activeTab === 'borrowable'
+                            ? 'border-blue-600 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'
                             }`}
                     >
                         <span className="inline-flex items-center gap-1">
-                            ⚠️ ใกล้หมด
-                            <span className={`px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'low_stock' ? 'bg-red-600 text-white' : 'bg-red-100 text-red-700'
-                                }`}>
-                                {lowStockItems.length}
-                            </span>
+                            <Icons.Repeat className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            <span className="hidden sm:inline">ยืม-คืน ({borrowableCount})</span>
+                            <span className="sm:hidden">ยืม</span>
+                            <span className="sm:hidden ml-1 px-1.5 py-0.5 bg-blue-100 rounded text-[10px]">{borrowableCount}</span>
                         </span>
                     </button>
-                )}
+                    <button
+                        onClick={() => setActiveTab('consumable')}
+                        className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${activeTab === 'consumable'
+                            ? 'border-purple-600 text-purple-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'
+                            }`}
+                    >
+                        <span className="inline-flex items-center gap-1">
+                            <Icons.Box className="w-3.5 h-3.5 md:w-4 md:h-4" />
+                            <span className="hidden sm:inline">เบิก ({consumableCount})</span>
+                            <span className="sm:hidden">เบิก</span>
+                            <span className="sm:hidden ml-1 px-1.5 py-0.5 bg-purple-100 rounded text-[10px]">{consumableCount}</span>
+                        </span>
+                    </button>
+                    {lowStockItems.length > 0 && (
+                        <button
+                            onClick={() => setActiveTab('low_stock')}
+                            className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${activeTab === 'low_stock'
+                                ? 'border-red-600 text-red-600'
+                                : 'border-transparent text-red-500 hover:text-red-700'
+                                }`}
+                        >
+                            <span className="inline-flex items-center gap-1">
+                                <span className="text-xs md:text-sm">⚠️</span>
+                                <span className="hidden sm:inline">ใกล้หมด</span>
+                                <span className={`px-1.5 py-0.5 rounded-full text-[10px] md:text-xs font-bold ${activeTab === 'low_stock' ? 'bg-red-600 text-white' : 'bg-red-100 text-red-700'
+                                    }`}>
+                                    {lowStockItems.length}
+                                </span>
+                            </span>
+                        </button>
+                    )}
+                </div>
+                {/* Fade effect on right side to indicate more tabs */}
+                <div className="absolute right-0 top-0 bottom-px w-8 bg-gradient-to-l from-white to-transparent pointer-events-none md:hidden"></div>
             </div>
 
             {/* Search & Category Filter */}

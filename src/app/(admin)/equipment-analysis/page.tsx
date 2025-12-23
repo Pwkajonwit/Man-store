@@ -99,12 +99,13 @@ export default function EquipmentAnalysisPage() {
             setActiveBorrows(data);
         });
 
-        // Fetch recent activity (last 20)
+        // Fetch recent activity (last 20) - รวมทั้ง equipment-usage และ stock-history
         const fetchRecentActivity = async () => {
             if (!db) return;
             try {
-                const snapshot = await getDocs(collection(db as any, "equipment-usage"));
-                const data = snapshot.docs.map(doc => {
+                // ดึงข้อมูลการยืม/เบิก
+                const usageSnapshot = await getDocs(collection(db as any, "equipment-usage"));
+                const usageData = usageSnapshot.docs.map(doc => {
                     const d = doc.data();
                     return {
                         id: doc.id,
@@ -113,13 +114,41 @@ export default function EquipmentAnalysisPage() {
                         withdrawTime: d.withdrawTime?.toDate?.() || d.withdrawTime,
                         returnTime: d.returnTime?.toDate?.() || d.returnTime,
                         createdAt: d.createdAt?.toDate?.() || d.createdAt,
-                    } as UsageRecord;
-                }).sort((a, b) => {
+                        activityType: 'usage' as const,
+                    } as UsageRecord & { activityType: 'usage' };
+                });
+
+                // ดึงข้อมูลการนำเข้า/เติมสต็อก
+                const stockSnapshot = await getDocs(collection(db as any, "stock-history"));
+                const stockData = stockSnapshot.docs.map(doc => {
+                    const d = doc.data();
+                    return {
+                        id: doc.id,
+                        equipmentName: d.equipmentName || 'ไม่ระบุ',
+                        userName: 'ระบบ',
+                        borrowTime: null,
+                        withdrawTime: null,
+                        returnTime: null,
+                        createdAt: d.createdAt?.toDate?.() || d.createdAt,
+                        status: 'completed',
+                        type: 'restock',
+                        quantity: d.quantity || 0,
+                        unit: 'ชิ้น',
+                        note: d.note,
+                        previousQuantity: d.previousQuantity,
+                        newQuantity: d.newQuantity,
+                        activityType: 'stock' as const,
+                    } as UsageRecord & { activityType: 'stock'; note?: string; previousQuantity?: number; newQuantity?: number };
+                });
+
+                // รวมและเรียงลำดับตามวันที่
+                const allActivity = [...usageData, ...stockData].sort((a, b) => {
                     const dateA: any = new Date(a.createdAt || a.borrowTime || a.withdrawTime);
                     const dateB: any = new Date(b.createdAt || b.borrowTime || b.withdrawTime);
                     return dateB - dateA;
                 }).slice(0, 20);
-                setRecentActivity(data);
+
+                setRecentActivity(allActivity as any);
             } catch (error) {
                 console.error("Error fetching recent activity:", error);
             }
@@ -322,7 +351,10 @@ export default function EquipmentAnalysisPage() {
                             <div key={loc} className="bg-gray-50 rounded-lg p-3 hover:bg-gray-100 transition-colors">
                                 <div className="flex items-center gap-2 mb-2">
                                     <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center">
-                                        <span className="text-sm">📍</span>
+                                        <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
                                     </div>
                                     <div className="font-medium text-gray-900 text-sm truncate">{loc}</div>
                                 </div>
@@ -420,27 +452,35 @@ export default function EquipmentAnalysisPage() {
                                         <div className="flex-1">
                                             <div className="flex items-center gap-2 mb-1">
                                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${item.type === 'borrow'
-                                                    ? 'bg-blue-100 text-blue-700'
-                                                    : 'bg-purple-100 text-purple-700'
+                                                        ? 'bg-blue-100 text-blue-700'
+                                                        : item.type === 'restock'
+                                                            ? 'bg-green-100 text-green-700'
+                                                            : 'bg-purple-100 text-purple-700'
                                                     }`}>
-                                                    {item.type === 'borrow' ? 'ยืม' : 'เบิก'}
+                                                    {item.type === 'borrow' ? 'ยืม' : item.type === 'restock' ? 'นำเข้า' : 'เบิก'}
                                                 </span>
-                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${item.status === 'returned'
-                                                    ? 'bg-green-100 text-green-700'
-                                                    : item.status === 'active'
-                                                        ? 'bg-yellow-100 text-yellow-700'
-                                                        : 'bg-gray-100 text-gray-700'
-                                                    }`}>
-                                                    {item.status === 'returned' ? 'คืนแล้ว' : item.status === 'active' ? 'กำลังยืม' : 'เบิกแล้ว'}
-                                                </span>
+                                                {item.type !== 'restock' && (
+                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${item.status === 'returned'
+                                                        ? 'bg-green-100 text-green-700'
+                                                        : item.status === 'active'
+                                                            ? 'bg-yellow-100 text-yellow-700'
+                                                            : 'bg-gray-100 text-gray-700'
+                                                        }`}>
+                                                        {item.status === 'returned' ? 'คืนแล้ว' : item.status === 'active' ? 'กำลังยืม' : 'เบิกแล้ว'}
+                                                    </span>
+                                                )}
                                             </div>
                                             <div className="font-medium text-sm text-gray-900">{item.equipmentName}</div>
                                             <div className="text-xs text-gray-500 mt-1">
-                                                {item.userName} • {item.quantity} {item.unit}
+                                                {item.type === 'restock' ? (
+                                                    <span className="text-green-600 font-medium">+{item.quantity} ชิ้น</span>
+                                                ) : (
+                                                    <>{item.userName} • {item.quantity} {item.unit}</>
+                                                )}
                                             </div>
                                         </div>
                                         <div className="text-xs text-gray-400">
-                                            {formatDateTime(item.borrowTime || item.withdrawTime)}
+                                            {formatDateTime(item.createdAt || item.borrowTime || item.withdrawTime)}
                                         </div>
                                     </div>
                                 </div>
