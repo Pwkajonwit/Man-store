@@ -23,25 +23,17 @@ const firebaseConfig: FirebaseConfig = {
     appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Check if config exists
-const hasValidConfig = firebaseConfig.apiKey && firebaseConfig.projectId;
+// Initialize Firebase
+let app: FirebaseApp;
 
-let app: FirebaseApp | null = null;
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-let storage: FirebaseStorage | null = null;
-
-if (hasValidConfig) {
-    if (!getApps().length) {
-        app = initializeApp(firebaseConfig);
-    } else {
-        app = getApps()[0];
-    }
-
-    // Cast to non-null because we know app is initialized inside this block
-    auth = getAuth(app!);
-    db = getFirestore(app!);
-    storage = getStorage(app!);
+if (!getApps().length) {
+    app = initializeApp(firebaseConfig);
+} else {
+    app = getApps()[0];
 }
 
-export { auth, db, storage };
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+
+export { auth, db, storage, firebaseConfig };

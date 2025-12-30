@@ -8,6 +8,7 @@ import { useAppSettings } from "@/context/AppSettingsContext";
 import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import MainHeader from '@/components/main/MainHeader';
+import QRScannerModal from '@/components/ui/QRScannerModal';
 
 interface Equipment {
     id: string;
@@ -41,6 +42,7 @@ export default function EquipmentSelectionPage() {
     const [searchQuery, setSearchQuery] = useState("");
     const [selectedCategory, setSelectedCategory] = useState('all');
     const [cart, setCart] = useState<CartItem[]>([]);
+    const [showScanner, setShowScanner] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [purpose, setPurpose] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -137,6 +139,27 @@ export default function EquipmentSelectionPage() {
     };
 
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+    const handleScan = (decodedText: string) => {
+        try {
+            // Try to parse as JSON first (from our generator)
+            const data = JSON.parse(decodedText);
+            if (data.id) {
+                // Find matching equipment name to show search
+                const item = equipment.find(e => e.id === data.id);
+                if (item) {
+                    setSearchQuery(item.name); // Or use exact ID filtering if search supports it
+                    // Optionally direct add to cart or just highlight
+                } else if (data.code) {
+                    setSearchQuery(data.code);
+                }
+            }
+        } catch (e) {
+            // Not JSON, assume plain text (name or code)
+            setSearchQuery(decodedText);
+        }
+        setShowScanner(false);
+    };
 
     // ส่งคำขอยืม/เบิก (Client-side Implementation for Dev)
     const handleSubmit = async () => {
@@ -326,18 +349,28 @@ export default function EquipmentSelectionPage() {
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                                 placeholder="ค้นหาชื่อ, รหัส..."
-                                className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                                className="w-full pl-10 pr-14 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                             />
                             {searchQuery && (
                                 <button
                                     onClick={() => setSearchQuery("")}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
                                 >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                                     </svg>
                                 </button>
                             )}
+                            <button
+                                onClick={() => setShowScanner(true)}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-teal-600 text-white hover:bg-teal-700 transition-colors p-2 rounded-lg shadow-sm"
+                                title="สแกน QR Code"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75zM6.75 16.5h.75v.75h-.75v-.75zM16.5 6.75h.75v.75h-.75v-.75zM13.5 13.5h.75v.75h-.75v-.75zM13.5 19.5h.75v.75h-.75v-.75zM19.5 13.5h.75v.75h-.75v-.75zM19.5 19.5h.75v.75h-.75v-.75zM16.5 16.5h.75v.75h-.75v-.75z" />
+                                </svg>
+                            </button>
                         </div>
 
                         {/* Category Filter */}
@@ -580,6 +613,12 @@ export default function EquipmentSelectionPage() {
                         </div>
                     </div>
                 </div>
+            )}
+            {showScanner && (
+                <QRScannerModal
+                    onClose={() => setShowScanner(false)}
+                    onScan={handleScan}
+                />
             )}
         </div>
     );
