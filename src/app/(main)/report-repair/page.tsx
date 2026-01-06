@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, Timestamp, orderBy, getDoc } from "firebase/firestore";
@@ -9,6 +9,49 @@ import Image from 'next/image';
 import { useModal } from '@/components/ui/Modal';
 import { useAppSettings } from '@/context/AppSettingsContext';
 import liff from '@line/liff';
+import QRScannerModal from '@/components/ui/QRScannerModal';
+
+// Debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+    const [debouncedValue, setDebouncedValue] = useState<T>(value);
+    useEffect(() => {
+        const handler = setTimeout(() => setDebouncedValue(value), delay);
+        return () => clearTimeout(handler);
+    }, [value, delay]);
+    return debouncedValue;
+}
+
+// Memoized Equipment Item Component
+interface EquipmentItemProps {
+    eq: Equipment;
+    onSelect: () => void;
+}
+
+const EquipmentItem = memo(function EquipmentItem({ eq, onSelect }: EquipmentItemProps) {
+    return (
+        <div
+            onClick={onSelect}
+            className="bg-white rounded-xl p-3 shadow-sm flex items-center gap-3 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
+        >
+            {eq.imageUrl ? (
+                <Image src={eq.imageUrl} alt={eq.name} width={48} height={48} className="rounded-lg object-cover" />
+            ) : (
+                <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
+                    <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" />
+                    </svg>
+                </div>
+            )}
+            <div className="flex-1 min-w-0">
+                <div className="font-medium text-gray-900 text-sm truncate">{eq.name}</div>
+                <div className="text-xs text-gray-500">{eq.category || 'ไม่ระบุหมวดหมู่'}</div>
+            </div>
+            <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+        </div>
+    );
+});
 
 interface Equipment {
     id: string;
@@ -47,9 +90,37 @@ export default function ReportRepairPage() {
     const [submitting, setSubmitting] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filterCategory, setFilterCategory] = useState('');
+    const [showScanner, setShowScanner] = useState(false);
+    const [displayCount, setDisplayCount] = useState(20); // Load More
     const { showAlert } = useModal();
     const { lineSettings } = useAppSettings();
     const userChatMessageEnabled = lineSettings.userChatMessage;
+
+    // Debounce search query
+    const debouncedSearch = useDebounce(searchQuery, 300);
+
+    // Handle QR Scan
+    const handleScan = (decodedText: string) => {
+        try {
+            // Try to parse as JSON first (from our generator)
+            const data = JSON.parse(decodedText);
+            if (data.id) {
+                // Find matching equipment
+                const item = equipment.find(e => e.id === data.id);
+                if (item) {
+                    setSearchQuery(item.name);
+                } else if (data.code) {
+                    setSearchQuery(data.code);
+                } else if (data.name) {
+                    setSearchQuery(data.name);
+                }
+            }
+        } catch (e) {
+            // Not JSON, assume plain text (name or code)
+            setSearchQuery(decodedText);
+        }
+        setShowScanner(false);
+    };
 
     // โหลดอุปกรณ์ที่สถานะ available หรือ in_use (เฉพาะ borrowable - ไม่รวมวัสดุสิ้นเปลือง)
     useEffect(() => {
@@ -94,10 +165,36 @@ export default function ReportRepairPage() {
         return () => unsubscribe();
     }, [user, userProfile]);
 
-    // กรองอุปกรณ์
-    const filteredEquipment = equipment
-        .filter(e => !searchQuery || e.name?.toLowerCase().includes(searchQuery.toLowerCase()))
-        .filter(e => !filterCategory || e.category === filterCategory);
+    // Reset display count when filter changes
+    useEffect(() => {
+        setDisplayCount(20);
+    }, [debouncedSearch, filterCategory]);
+
+    // Memoized categories
+    const categories = useMemo(() => {
+        return [...new Set(equipment.map(e => e.category).filter(Boolean))];
+    }, [equipment]);
+
+    // Memoized filtered equipment
+    const filteredEquipment = useMemo(() => {
+        return equipment
+            .filter(e => !debouncedSearch || e.name?.toLowerCase().includes(debouncedSearch.toLowerCase()))
+            .filter(e => !filterCategory || e.category === filterCategory);
+    }, [equipment, debouncedSearch, filterCategory]);
+
+    // Displayed equipment (with Load More)
+    const displayedEquipment = useMemo(() => {
+        return filteredEquipment.slice(0, displayCount);
+    }, [filteredEquipment, displayCount]);
+
+    const hasMore = displayCount < filteredEquipment.length;
+
+    // Handle select equipment (memoized)
+    const handleSelectEquipment = useCallback((eq: Equipment) => {
+        setSelectedEquipment(eq);
+        setProblemNote('');
+        setReportModal(true);
+    }, []);
 
     // ส่งแจ้งซ่อม
     const submitReport = async () => {
@@ -281,8 +378,28 @@ export default function ReportRepairPage() {
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
                                     placeholder="ค้นหาอุปกรณ์..."
-                                    className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    className="w-full pl-10 pr-14 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                                 />
+                                {searchQuery && (
+                                    <button
+                                        onClick={() => setSearchQuery('')}
+                                        className="absolute right-12 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => setShowScanner(true)}
+                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-teal-600 text-white hover:bg-teal-700 transition-colors p-2 rounded-lg shadow-sm"
+                                    title="สแกน QR Code"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75zM6.75 16.5h.75v.75h-.75v-.75zM16.5 6.75h.75v.75h-.75v-.75zM13.5 13.5h.75v.75h-.75v-.75zM13.5 19.5h.75v.75h-.75v-.75zM19.5 13.5h.75v.75h-.75v-.75zM19.5 19.5h.75v.75h-.75v-.75zM16.5 16.5h.75v.75h-.75v-.75z" />
+                                    </svg>
+                                </button>
                             </div>
                             <select
                                 value={filterCategory}
@@ -290,10 +407,16 @@ export default function ReportRepairPage() {
                                 className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                             >
                                 <option value="">ทุกหมวดหมู่</option>
-                                {[...new Set(equipment.map(e => e.category).filter(Boolean))].map(cat => (
+                                {categories.map(cat => (
                                     <option key={cat!} value={cat}>{cat}</option>
                                 ))}
                             </select>
+                            {/* Results count */}
+                            <p className="text-xs text-gray-500 mt-2">
+                                {debouncedSearch || filterCategory
+                                    ? `พบ ${filteredEquipment.length} รายการ`
+                                    : `ทั้งหมด ${equipment.length} รายการ`}
+                            </p>
                         </div>
 
                         {/* Equipment List */}
@@ -306,30 +429,30 @@ export default function ReportRepairPage() {
                                     <p className="text-gray-500">ไม่พบอุปกรณ์</p>
                                 </div>
                             ) : (
-                                filteredEquipment.map(eq => (
-                                    <div
-                                        key={eq.id}
-                                        onClick={() => { setSelectedEquipment(eq); setProblemNote(''); setReportModal(true); }}
-                                        className="bg-white rounded-xl p-3 shadow-sm flex items-center gap-3 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
-                                    >
-                                        {eq.imageUrl ? (
-                                            <Image src={eq.imageUrl} alt={eq.name} width={48} height={48} className="rounded-lg object-cover" />
-                                        ) : (
-                                            <div className="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center">
-                                                <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" />
-                                                </svg>
-                                            </div>
-                                        )}
-                                        <div className="flex-1 min-w-0">
-                                            <div className="font-medium text-gray-900 text-sm truncate">{eq.name}</div>
-                                            <div className="text-xs text-gray-500">{eq.category || 'ไม่ระบุหมวดหมู่'}</div>
-                                        </div>
-                                        <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                        </svg>
-                                    </div>
-                                ))
+                                <>
+                                    {displayedEquipment.map(eq => (
+                                        <EquipmentItem
+                                            key={eq.id}
+                                            eq={eq}
+                                            onSelect={() => handleSelectEquipment(eq)}
+                                        />
+                                    ))}
+
+                                    {/* Load More Button */}
+                                    {hasMore && (
+                                        <button
+                                            onClick={() => setDisplayCount(prev => prev + 20)}
+                                            className="w-full py-3 bg-white rounded-xl shadow-sm text-sm font-medium text-teal-600 hover:bg-teal-50 transition-colors"
+                                        >
+                                            ดูเพิ่มเติม ({filteredEquipment.length - displayCount} รายการ)
+                                        </button>
+                                    )}
+
+                                    {/* Show count */}
+                                    <p className="text-center text-xs text-gray-400 mt-2">
+                                        แสดง {displayedEquipment.length} จาก {filteredEquipment.length} รายการ
+                                    </p>
+                                </>
                             )}
                         </div>
                     </div>
@@ -486,6 +609,14 @@ export default function ReportRepairPage() {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* QR Scanner Modal */}
+            {showScanner && (
+                <QRScannerModal
+                    onClose={() => setShowScanner(false)}
+                    onScan={handleScan}
+                />
             )}
 
             <style jsx>{`

@@ -325,6 +325,10 @@ export default function EquipmentPage() {
     const [locationFilter, setLocationFilter] = useState('all');
     const { showAlert, showConfirm } = useModal();
 
+    // Pagination States
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
     // CSV Import States
     const [showCsvModal, setShowCsvModal] = useState(false);
     const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -651,6 +655,11 @@ export default function EquipmentPage() {
     const borrowableCount = equipment.filter(item => item.type === 'borrowable').length;
     const consumableCount = equipment.filter(item => item.type === 'consumable').length;
 
+    // Reset page when filters change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [activeTab, searchQuery, categoryFilter, locationFilter]);
+
     // Low stock items
     const lowStockItems = equipment.filter(item => {
         if (item.status === 'low_stock' || item.status === 'out_of_stock') return true;
@@ -658,6 +667,12 @@ export default function EquipmentPage() {
         if ((item.availableQuantity || 0) <= 0) return true;
         return false;
     });
+
+    // Pagination calculation
+    const totalPages = Math.ceil(filteredEquipment.length / itemsPerPage);
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    const paginatedEquipment = filteredEquipment.slice(startIndex, endIndex);
 
     return (
         <div className="max-w-7xl mx-auto">
@@ -1011,9 +1026,27 @@ export default function EquipmentPage() {
             </div>
 
             {/* Results Count */}
-            {(searchQuery || categoryFilter !== 'all' || locationFilter !== 'all') && (
-                <p className="text-sm text-gray-500 mb-3">พบ {filteredEquipment.length} รายการ</p>
-            )}
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <p className="text-sm text-gray-500">
+                    {filteredEquipment.length > 0
+                        ? `แสดง ${startIndex + 1}-${Math.min(endIndex, filteredEquipment.length)} จาก ${filteredEquipment.length} รายการ`
+                        : 'ไม่พบรายการ'}
+                </p>
+                <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-500">แสดง:</label>
+                    <select
+                        value={itemsPerPage}
+                        onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                        className="px-2 py-1 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                    >
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                    </select>
+                    <span className="text-sm text-gray-500">รายการ</span>
+                </div>
+            </div>
 
             {loading ? (
                 <div className="flex items-center justify-center min-h-[400px]">
@@ -1029,8 +1062,91 @@ export default function EquipmentPage() {
                 </div>
             ) : (
                 <>
-                    <EquipmentTable equipment={filteredEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
-                    <EquipmentCards equipment={filteredEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
+                    <EquipmentTable equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
+                    <EquipmentCards equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
+
+                    {/* Pagination Controls */}
+                    {totalPages > 1 && (
+                        <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <p className="text-sm text-gray-500">
+                                หน้า {currentPage} จาก {totalPages}
+                            </p>
+                            <div className="flex items-center gap-1">
+                                {/* First Page */}
+                                <button
+                                    onClick={() => setCurrentPage(1)}
+                                    disabled={currentPage === 1}
+                                    className="p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    title="หน้าแรก"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                                    </svg>
+                                </button>
+                                {/* Previous Page */}
+                                <button
+                                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                    disabled={currentPage === 1}
+                                    className="p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    title="หน้าก่อนหน้า"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                                    </svg>
+                                </button>
+
+                                {/* Page Numbers */}
+                                <div className="flex items-center gap-1 mx-2">
+                                    {Array.from({ length: totalPages }, (_, i) => i + 1)
+                                        .filter(page => {
+                                            if (totalPages <= 5) return true;
+                                            if (page === 1 || page === totalPages) return true;
+                                            if (Math.abs(page - currentPage) <= 1) return true;
+                                            return false;
+                                        })
+                                        .map((page, index, arr) => (
+                                            <span key={page} className="flex items-center">
+                                                {index > 0 && arr[index - 1] !== page - 1 && (
+                                                    <span className="px-1 text-gray-400">...</span>
+                                                )}
+                                                <button
+                                                    onClick={() => setCurrentPage(page)}
+                                                    className={`min-w-[36px] h-9 rounded-lg text-sm font-medium transition-colors ${currentPage === page
+                                                        ? 'bg-teal-600 text-white'
+                                                        : 'border border-gray-200 text-gray-600 hover:bg-gray-50'
+                                                        }`}
+                                                >
+                                                    {page}
+                                                </button>
+                                            </span>
+                                        ))}
+                                </div>
+
+                                {/* Next Page */}
+                                <button
+                                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                    disabled={currentPage === totalPages}
+                                    className="p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    title="หน้าถัดไป"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                    </svg>
+                                </button>
+                                {/* Last Page */}
+                                <button
+                                    onClick={() => setCurrentPage(totalPages)}
+                                    disabled={currentPage === totalPages}
+                                    className="p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    title="หน้าสุดท้าย"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </>
             )}
 

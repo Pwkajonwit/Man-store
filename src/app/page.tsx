@@ -6,7 +6,7 @@ import { auth } from '@/lib/firebase';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 
-// Icons Component
+// Icons Component - เหลือเฉพาะที่ใช้งานจริง
 const Icons = {
     Tool: ({ className }: { className?: string }) => (
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
@@ -22,27 +22,6 @@ const Icons = {
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
         </svg>
-    ),
-    Wrench: ({ className }: { className?: string }) => (
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75a4.5 4.5 0 01-4.884 4.484c-1.076-.091-2.264.071-2.95.904l-7.152 8.684a2.548 2.548 0 11-3.586-3.586l8.684-7.152c.833-.686.995-1.874.904-2.95a4.5 4.5 0 016.336-4.486l-3.276 3.276a3.004 3.004 0 002.25 2.25l3.276-3.276c.256.565.398 1.192.398 1.852z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4.867 19.125h.008v.008h-.008v-.008z" />
-        </svg>
-    ),
-    Repeat: ({ className }: { className?: string }) => (
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
-        </svg>
-    ),
-    Box: ({ className }: { className?: string }) => (
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
-        </svg>
-    ),
-    ShieldCheck: ({ className }: { className?: string }) => (
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-        </svg>
     )
 };
 
@@ -56,7 +35,6 @@ export default function LoginPage() {
 
     useEffect(() => {
         if (!authLoading && userProfile) {
-            // Role-based redirection
             if (userProfile.role === 'admin' || userProfile.role === 'employee') {
                 router.replace('/equipment-analysis');
             } else {
@@ -73,7 +51,6 @@ export default function LoginPage() {
         setLoading(true);
         try {
             await signInWithEmailAndPassword(auth, email, password);
-            // Let useEffect handle redirection
         } catch (err: any) {
             if (err.code === 'auth/invalid-credential') {
                 setError('อีเมลหรือรหัสผ่านไม่ถูกต้อง');
@@ -87,53 +64,19 @@ export default function LoginPage() {
 
     return (
         <main className="flex items-center justify-center min-h-screen gradient-bg">
-            <div className="w-full max-w-md px-6 py-8">
+            <div className="w-full max-w-sm px-6">
                 {/* Logo & Header */}
                 <div className="text-center mb-8">
-                    <div className="inline-flex items-center justify-center w-20 h-20 bg-white/10 backdrop-blur-sm rounded-3xl mb-4 shadow-2xl border border-white/20">
-                        <Icons.Tool className="w-10 h-10 text-white" />
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-white/10 backdrop-blur-sm rounded-2xl mb-4 border border-white/20">
+                        <Icons.Tool className="w-8 h-8 text-white" />
                     </div>
-                    <h1 className="text-3xl font-bold text-white mb-2">ระบบจัดการอุปกรณ์</h1>
-                    <p className="text-cyan-100 text-sm">ยืม-คืน และเบิกอุปกรณ์ช่าง</p>
-                </div>
-
-                {/* Features */}
-                <div className="grid grid-cols-2 gap-3 mb-6">
-                    <div className="bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
-                        <div className="flex items-center gap-2 text-white">
-                            <div className="w-8 h-8 bg-blue-500/30 rounded-lg flex items-center justify-center">
-                                <Icons.Repeat className="w-4 h-4" />
-                            </div>
-                            <div>
-                                <p className="text-xs font-medium">ยืม-คืน</p>
-                                <p className="text-[10px] text-cyan-200">อุปกรณ์ใช้ซ้ำ</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div className="bg-white/10 backdrop-blur-sm rounded-xl p-3 border border-white/10">
-                        <div className="flex items-center gap-2 text-white">
-                            <div className="w-8 h-8 bg-purple-500/30 rounded-lg flex items-center justify-center">
-                                <Icons.Box className="w-4 h-4" />
-                            </div>
-                            <div>
-                                <p className="text-xs font-medium">เบิก</p>
-                                <p className="text-[10px] text-cyan-200">วัสดุสิ้นเปลือง</p>
-                            </div>
-                        </div>
-                    </div>
+                    <h1 className="text-2xl font-bold text-white">ระบบจัดการอุปกรณ์</h1>
+                    <p className="text-cyan-100/80 text-sm mt-1">ยืม-คืน และเบิกอุปกรณ์ช่าง</p>
                 </div>
 
                 {/* Login Card */}
-                <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
-                    <div className="px-6 py-4 bg-gradient-to-r from-cyan-600 to-teal-600">
-                        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                            <Icons.ShieldCheck className="w-5 h-5" />
-                            เข้าสู่ระบบ
-                        </h2>
-                        <p className="text-cyan-100 text-xs mt-0.5">สำหรับผู้ดูแลและพนักงาน</p>
-                    </div>
-
-                    <form onSubmit={handleLogin} className="p-6 space-y-4">
+                <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-xl overflow-hidden">
+                    <form onSubmit={handleLogin} className="p-6 space-y-5">
                         {/* Email Input */}
                         <div>
                             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -150,7 +93,7 @@ export default function LoginPage() {
                                     onChange={(e) => setEmail(e.target.value)}
                                     required
                                     placeholder="example@company.com"
-                                    className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all text-sm"
+                                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent focus:bg-white transition-all text-sm"
                                 />
                             </div>
                         </div>
@@ -171,27 +114,25 @@ export default function LoginPage() {
                                     onChange={(e) => setPassword(e.target.value)}
                                     required
                                     placeholder="••••••••"
-                                    className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all text-sm"
+                                    className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent focus:bg-white transition-all text-sm"
                                 />
                             </div>
                         </div>
 
                         {/* Error Message */}
                         {error && (
-                            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                                <div className="flex items-center gap-2">
-                                    <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    <p className="text-sm text-red-700">{error}</p>
-                                </div>
+                            <div className="bg-red-50 border border-red-100 rounded-xl p-3 flex items-center gap-2">
+                                <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <p className="text-sm text-red-600">{error}</p>
                             </div>
                         )}
 
                         {/* Submit Button */}
                         <button
                             type="submit"
-                            className="w-full px-4 py-3 font-semibold text-white bg-gradient-to-r from-cyan-600 to-teal-600 rounded-lg hover:from-cyan-700 hover:to-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                            className="w-full py-3 font-semibold text-white bg-gradient-to-r from-cyan-600 to-teal-600 rounded-xl hover:from-cyan-700 hover:to-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg shadow-cyan-500/25 transition-all"
                             disabled={loading}
                         >
                             {loading ? (
@@ -206,21 +147,8 @@ export default function LoginPage() {
                     </form>
                 </div>
 
-                {/* Footer Info */}
-                <div className="mt-6 text-center">
-                    <div className="bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl p-4">
-                        <div className="flex items-center justify-center gap-2 mb-2">
-                            <Icons.Wrench className="w-5 h-5 text-cyan-300" />
-                            <p className="text-sm text-white font-medium">ระบบจัดการอุปกรณ์ช่าง</p>
-                        </div>
-                        <p className="text-xs text-cyan-200">
-                            ติดตามสถานะอุปกรณ์ • จัดการยืม-คืน • รายงานการใช้งาน
-                        </p>
-                    </div>
-                </div>
-
                 {/* Copyright */}
-                <p className="text-center text-xs text-cyan-200/60 mt-6">
+                <p className="text-center text-xs text-white/40 mt-8">
                     © 2025 Equipment Management System
                 </p>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { useAuth } from "@/context/AuthContext";
@@ -32,6 +32,94 @@ interface CartItem {
     imageUrl?: string;
 }
 
+// Debounce hook
+function useDebounce<T>(value: T, delay: number): T {
+    const [debouncedValue, setDebouncedValue] = useState<T>(value);
+    useEffect(() => {
+        const handler = setTimeout(() => setDebouncedValue(value), delay);
+        return () => clearTimeout(handler);
+    }, [value, delay]);
+    return debouncedValue;
+}
+
+// Memoized Equipment Item Component
+interface EquipmentItemProps {
+    eq: Equipment;
+    inCart: number;
+    activeTab: string;
+    onAdd: () => void;
+    onRemove: () => void;
+}
+
+const EquipmentItem = memo(function EquipmentItem({ eq, inCart, activeTab, onAdd, onRemove }: EquipmentItemProps) {
+    return (
+        <div className={`p-3 flex gap-3 transition-colors ${inCart > 0 ? 'bg-teal-50' : ''}`}>
+            {/* Image */}
+            <div className="w-14 h-14 bg-gray-100 rounded-lg flex-shrink-0 overflow-hidden">
+                {eq.imageUrl ? (
+                    <Image src={eq.imageUrl} alt="" width={56} height={56} className="object-cover w-full h-full" unoptimized />
+                ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                        <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" />
+                        </svg>
+                    </div>
+                )}
+            </div>
+
+            {/* Info */}
+            <div className="flex-1 min-w-0">
+                <h3 className="font-medium text-gray-800 text-sm truncate">{eq.name}</h3>
+                <p className="text-xs text-gray-500">{eq.category || 'ทั่วไป'}</p>
+                <div className="flex items-center gap-2 mt-1">
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${eq.availableQuantity <= 3
+                        ? 'bg-orange-100 text-orange-700'
+                        : 'bg-green-100 text-green-700'
+                        }`}>
+                        คงเหลือ {eq.availableQuantity} {eq.unit || 'ชิ้น'}
+                    </span>
+                </div>
+            </div>
+
+            {/* Quantity Controls */}
+            <div className="flex items-center gap-1">
+                {inCart > 0 ? (
+                    <>
+                        <button
+                            onClick={onRemove}
+                            className="w-8 h-8 flex items-center justify-center bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+                            </svg>
+                        </button>
+                        <span className="w-8 text-center font-semibold text-sm">{inCart}</span>
+                        <button
+                            onClick={onAdd}
+                            disabled={inCart >= eq.availableQuantity}
+                            className="w-8 h-8 flex items-center justify-center bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors disabled:bg-gray-300"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                            </svg>
+                        </button>
+                    </>
+                ) : (
+                    <button
+                        onClick={onAdd}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'borrowable'
+                            ? 'bg-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-purple-600 text-white hover:bg-purple-700'
+                            }`}
+                    >
+                        เลือก
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+});
+
 export default function EquipmentSelectionPage() {
     const { user, userProfile } = useAuth();
     const { lineSettings } = useAppSettings();
@@ -48,6 +136,10 @@ export default function EquipmentSelectionPage() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
     const [message, setMessage] = useState("");
+    const [displayCount, setDisplayCount] = useState(20); // Load More
+
+    // Debounce search query
+    const debouncedSearch = useDebounce(searchQuery, 300);
 
     // Get LINE settings from context (loaded once in layout)
     const userChatMessageEnabled = lineSettings.userChatMessage;
@@ -71,20 +163,26 @@ export default function EquipmentSelectionPage() {
         return () => unsubscribe();
     }, [activeTab]);
 
-    // Reset cart when tab changes
+    // Reset cart and displayCount when tab changes
     useEffect(() => {
         setCart([]);
         setSearchQuery("");
         setSelectedCategory('all');
+        setDisplayCount(20);
     }, [activeTab]);
 
-    // หมวดหมู่ทั้งหมด
+    // Reset displayCount when filters change
+    useEffect(() => {
+        setDisplayCount(20);
+    }, [debouncedSearch, selectedCategory]);
+
+    // หมวดหมู่ทั้งหมด (memoized)
     const categories = useMemo(() => {
         const cats = Array.from(new Set(equipment.map(e => e.category || 'ทั่วไป')));
         return cats.sort();
     }, [equipment]);
 
-    // กรองรายการ
+    // กรองรายการ (memoized with debounced search)
     const filteredEquipment = useMemo(() => {
         let result = equipment;
 
@@ -92,8 +190,8 @@ export default function EquipmentSelectionPage() {
             result = result.filter(eq => (eq.category || 'ทั่วไป') === selectedCategory);
         }
 
-        if (searchQuery.trim()) {
-            const q = searchQuery.toLowerCase();
+        if (debouncedSearch.trim()) {
+            const q = debouncedSearch.toLowerCase();
             result = result.filter(eq =>
                 eq.name?.toLowerCase().includes(q) ||
                 (eq.code && eq.code.toLowerCase().includes(q)) ||
@@ -102,10 +200,17 @@ export default function EquipmentSelectionPage() {
         }
 
         return result;
-    }, [equipment, searchQuery, selectedCategory]);
+    }, [equipment, debouncedSearch, selectedCategory]);
 
-    // เพิ่ม/ลด item ในตะกร้า
-    const updateCart = (eq: Equipment, delta: number) => {
+    // Displayed equipment (with Load More)
+    const displayedEquipment = useMemo(() => {
+        return filteredEquipment.slice(0, displayCount);
+    }, [filteredEquipment, displayCount]);
+
+    const hasMore = displayCount < filteredEquipment.length;
+
+    // เพิ่ม/ลด item ในตะกร้า (memoized)
+    const updateCart = useCallback((eq: Equipment, delta: number) => {
         setCart(prevCart => {
             const existing = prevCart.find(item => item.id === eq.id);
             if (existing) {
@@ -131,12 +236,13 @@ export default function EquipmentSelectionPage() {
             }
             return prevCart;
         });
-    };
+    }, []);
 
-    const getCartQuantity = (id: string) => {
+    // Get cart quantity (memoized)
+    const getCartQuantity = useCallback((id: string) => {
         const item = cart.find(c => c.id === id);
         return item ? item.quantity : 0;
-    };
+    }, [cart]);
 
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -418,77 +524,35 @@ export default function EquipmentSelectionPage() {
                                 </p>
                             </div>
                         ) : (
-                            <div className="divide-y divide-gray-100">
-                                {filteredEquipment.map(eq => {
-                                    const inCart = getCartQuantity(eq.id);
-                                    return (
-                                        <div key={eq.id} className={`p-3 flex gap-3 transition-colors ${inCart > 0 ? 'bg-teal-50' : ''}`}>
-                                            {/* Image */}
-                                            <div className="w-14 h-14 bg-gray-100 rounded-lg flex-shrink-0 overflow-hidden">
-                                                {eq.imageUrl ? (
-                                                    <Image src={eq.imageUrl} alt="" width={56} height={56} className="object-cover w-full h-full" unoptimized />
-                                                ) : (
-                                                    <div className="w-full h-full flex items-center justify-center">
-                                                        <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" />
-                                                        </svg>
-                                                    </div>
-                                                )}
-                                            </div>
+                            <>
+                                <div className="divide-y divide-gray-100">
+                                    {displayedEquipment.map(eq => (
+                                        <EquipmentItem
+                                            key={eq.id}
+                                            eq={eq}
+                                            inCart={getCartQuantity(eq.id)}
+                                            activeTab={activeTab}
+                                            onAdd={() => updateCart(eq, 1)}
+                                            onRemove={() => updateCart(eq, -1)}
+                                        />
+                                    ))}
+                                </div>
 
-                                            {/* Info */}
-                                            <div className="flex-1 min-w-0">
-                                                <h3 className="font-medium text-gray-800 text-sm truncate">{eq.name}</h3>
-                                                <p className="text-xs text-gray-500">{eq.category || 'ทั่วไป'}</p>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <span className={`text-xs px-2 py-0.5 rounded-full ${eq.availableQuantity <= 3
-                                                        ? 'bg-orange-100 text-orange-700'
-                                                        : 'bg-green-100 text-green-700'
-                                                        }`}>
-                                                        คงเหลือ {eq.availableQuantity} {eq.unit || 'ชิ้น'}
-                                                    </span>
-                                                </div>
-                                            </div>
+                                {/* Load More Button */}
+                                {hasMore && (
+                                    <button
+                                        onClick={() => setDisplayCount(prev => prev + 20)}
+                                        className="w-full py-3 text-sm font-medium text-teal-600 hover:bg-teal-50 transition-colors border-t border-gray-100"
+                                    >
+                                        ดูเพิ่มเติม ({filteredEquipment.length - displayCount} รายการ)
+                                    </button>
+                                )}
 
-                                            {/* Quantity Controls */}
-                                            <div className="flex items-center gap-1">
-                                                {inCart > 0 ? (
-                                                    <>
-                                                        <button
-                                                            onClick={() => updateCart(eq, -1)}
-                                                            className="w-8 h-8 flex items-center justify-center bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-                                                            </svg>
-                                                        </button>
-                                                        <span className="w-8 text-center font-semibold text-sm">{inCart}</span>
-                                                        <button
-                                                            onClick={() => updateCart(eq, 1)}
-                                                            disabled={inCart >= eq.availableQuantity}
-                                                            className="w-8 h-8 flex items-center justify-center bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors disabled:bg-gray-300"
-                                                        >
-                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                                            </svg>
-                                                        </button>
-                                                    </>
-                                                ) : (
-                                                    <button
-                                                        onClick={() => updateCart(eq, 1)}
-                                                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'borrowable'
-                                                            ? 'bg-blue-600 text-white hover:bg-blue-700'
-                                                            : 'bg-purple-600 text-white hover:bg-purple-700'
-                                                            }`}
-                                                    >
-                                                        เลือก
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                                {/* Count display */}
+                                <p className="text-center text-xs text-gray-400 py-2 border-t border-gray-100">
+                                    แสดง {displayedEquipment.length} จาก {filteredEquipment.length} รายการ
+                                </p>
+                            </>
                         )}
                     </div>
                 </div>
