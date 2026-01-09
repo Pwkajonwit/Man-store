@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useUser } from "@/context/UserContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
 import { useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
@@ -23,7 +23,7 @@ interface EquipmentUsage {
 }
 
 export default function MyEquipmentPage() {
-    const { user, userProfile } = useAuth();
+    const { user } = useUser();
     const { lineSettings } = useAppSettings();
     const router = useRouter();
     const [activeUsages, setActiveUsages] = useState<EquipmentUsage[]>([]);
@@ -36,10 +36,10 @@ export default function MyEquipmentPage() {
     const userChatMessageEnabled = lineSettings.userChatMessage;
 
     useEffect(() => {
-        if (!user && !userProfile) return;
+        if (!user) return;
         if (!db) return;
 
-        const userId = userProfile?.lineId || user?.uid;
+        const userId = user?.lineId;
         if (!userId) return;
 
         const usageQuery = query(
@@ -60,7 +60,7 @@ export default function MyEquipmentPage() {
         });
 
         return () => unsubscribe();
-    }, [user, userProfile]);
+    }, [user]);
 
     const handleReturn = async (usage: EquipmentUsage) => {
         if (returningId) return;
@@ -269,7 +269,7 @@ export default function MyEquipmentPage() {
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50">
-                <MainHeader userProfile={userProfile} activeTab="my-equipment" setActiveTab={() => { }} />
+                <MainHeader userProfile={user} activeTab="my-equipment" setActiveTab={() => { }} />
                 <div className="flex items-center justify-center py-20">
                     <div className="animate-spin h-8 w-8 border-3 border-teal-600 border-t-transparent rounded-full"></div>
                 </div>
@@ -279,7 +279,7 @@ export default function MyEquipmentPage() {
 
     return (
         <div className="min-h-screen bg-gray-50">
-            <MainHeader userProfile={userProfile} activeTab="my-equipment" setActiveTab={() => { }} />
+            <MainHeader userProfile={user} activeTab="my-equipment" setActiveTab={() => { }} />
 
             <div className="px-4 -mt-16">
                 {/* Summary Card */}

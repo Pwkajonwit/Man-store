@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useUser } from "@/context/UserContext";
 import { db } from "@/lib/firebase";
 import { collection, query, where, getDocs } from "firebase/firestore";
 import MainHeader from '@/components/main/MainHeader';
@@ -24,18 +24,18 @@ interface UsageHistory {
 }
 
 export default function EquipmentHistoryPage() {
-    const { user, userProfile } = useAuth();
+    const { user } = useUser();
     const [history, setHistory] = useState<UsageHistory[]>([]);
     const [loading, setLoading] = useState(true);
     const [filterType, setFilterType] = useState('all');
     const [displayCount, setDisplayCount] = useState(ITEMS_PER_PAGE);
 
     useEffect(() => {
-        if (!user && !userProfile) return;
+        if (!user) return;
         if (!db) return;
 
         const fetchHistory = async () => {
-            const userId = userProfile?.lineId || user?.uid;
+            const userId = user?.lineId;
             if (!userId) return;
 
             try {
@@ -63,7 +63,7 @@ export default function EquipmentHistoryPage() {
         };
 
         fetchHistory();
-    }, [user, userProfile]);
+    }, [user]);
 
     const formatDate = (date: any) => {
         if (!date) return '-';
@@ -81,7 +81,7 @@ export default function EquipmentHistoryPage() {
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50">
-                <MainHeader userProfile={userProfile} activeTab="history" setActiveTab={() => { }} />
+                <MainHeader userProfile={user} activeTab="history" setActiveTab={() => { }} />
                 <div className="flex items-center justify-center py-20">
                     <div className="animate-spin h-8 w-8 border-3 border-teal-600 border-t-transparent rounded-full"></div>
                 </div>
@@ -91,7 +91,7 @@ export default function EquipmentHistoryPage() {
 
     return (
         <div className="min-h-screen bg-gray-50">
-            <MainHeader userProfile={userProfile} activeTab="history" setActiveTab={() => { }} />
+            <MainHeader userProfile={user} activeTab="history" setActiveTab={() => { }} />
 
             <div className="px-4 -mt-16">
                 {/* Filter Tabs */}
