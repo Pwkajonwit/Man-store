@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, memo } from "react";
-import { useUser } from "@/context/UserContext";
+import { useAuth } from "@/context/AuthContext";
 import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, Timestamp, orderBy, getDoc } from "firebase/firestore";
 import MainHeader from '@/components/main/MainHeader';
@@ -78,7 +78,7 @@ interface RepairReport {
 }
 
 export default function ReportRepairPage() {
-    const { user } = useUser();
+    const { user, userProfile } = useAuth();
     const [equipment, setEquipment] = useState<Equipment[]>([]);
     const [myReports, setMyReports] = useState<RepairReport[]>([]);
     const [loading, setLoading] = useState(true);
@@ -142,10 +142,10 @@ export default function ReportRepairPage() {
 
     // โหลดรายการแจ้งซ่อมของผู้ใช้
     useEffect(() => {
-        if (!user) return;
+        if (!user && !userProfile) return;
         if (!db) return;
 
-        const userId = user?.lineId;
+        const userId = userProfile?.lineId || user?.uid;
         if (!userId) return;
 
         const q = query(
@@ -163,7 +163,7 @@ export default function ReportRepairPage() {
         });
 
         return () => unsubscribe();
-    }, [user]);
+    }, [user, userProfile]);
 
     // Reset display count when filter changes
     useEffect(() => {
@@ -219,8 +219,8 @@ export default function ReportRepairPage() {
                 problemNote: problemNote.trim(),
                 quantity: qty,
                 status: 'pending', // pending, approved, rejected
-                reportedBy: user?.lineId,
-                reporterName: user?.name || 'ไม่ทราบชื่อ',
+                reportedBy: userProfile?.lineId || user?.uid,
+                reporterName: userProfile?.name || 'ไม่ทราบชื่อ',
                 createdAt: Timestamp.now(),
             };
 
@@ -329,7 +329,7 @@ export default function ReportRepairPage() {
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50">
-                <MainHeader userProfile={user} activeTab="report-repair" setActiveTab={() => { }} />
+                <MainHeader userProfile={userProfile} activeTab="report-repair" setActiveTab={() => { }} />
                 <div className="flex items-center justify-center py-20">
                     <div className="animate-spin h-8 w-8 border-3 border-teal-600 border-t-transparent rounded-full"></div>
                 </div>
@@ -339,7 +339,7 @@ export default function ReportRepairPage() {
 
     return (
         <div className="min-h-screen bg-gray-50">
-            <MainHeader userProfile={user} activeTab="report-repair" setActiveTab={() => { }} />
+            <MainHeader userProfile={userProfile} activeTab="report-repair" setActiveTab={() => { }} />
 
             <div className="px-4 -mt-16">
                 {/* Toggle View */}

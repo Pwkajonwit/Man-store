@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { useUser } from "@/context/UserContext";
+import { useAuth } from "@/context/AuthContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
 import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
@@ -121,7 +121,7 @@ const EquipmentItem = memo(function EquipmentItem({ eq, inCart, activeTab, onAdd
 });
 
 export default function EquipmentSelectionPage() {
-    const { user } = useUser();
+    const { user, userProfile } = useAuth();
     const { lineSettings } = useAppSettings();
     const router = useRouter();
     const [equipment, setEquipment] = useState<Equipment[]>([]);
@@ -312,8 +312,8 @@ export default function EquipmentSelectionPage() {
                         equipmentImageUrl: item.imageUrl || '',
                         equipmentCategory: equipmentData.category || '',
                         equipmentLocation: equipmentData.location || '',
-                        userId: user?.lineId,
-                        userName: user?.name || user?.displayName || 'ไม่ระบุชื่อ',
+                        userId: userProfile?.lineId || user?.uid,
+                        userName: userProfile?.name || userProfile?.displayName || user?.displayName || 'ไม่ระบุชื่อ',
                         type: type,
                         quantity: item.quantity,
                         unit: item.unit || 'ชิ้น',
@@ -416,7 +416,7 @@ export default function EquipmentSelectionPage() {
 
     return (
         <div className="min-h-screen bg-gray-50 pb-24">
-            <MainHeader userProfile={user} activeTab="borrow" setActiveTab={() => { }} />
+            <MainHeader userProfile={userProfile} activeTab="borrow" setActiveTab={() => { }} />
 
             <div className="px-4 -mt-16">
                 {/* Main Card */}

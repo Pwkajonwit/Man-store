@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useUser } from "@/context/UserContext";
+import { useAuth } from "@/context/AuthContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
 import { useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
@@ -23,7 +23,7 @@ interface EquipmentUsage {
 }
 
 export default function MyEquipmentPage() {
-    const { user } = useUser();
+    const { user, userProfile } = useAuth();
     const { lineSettings } = useAppSettings();
     const router = useRouter();
     const [activeUsages, setActiveUsages] = useState<EquipmentUsage[]>([]);
@@ -36,16 +36,17 @@ export default function MyEquipmentPage() {
     const userChatMessageEnabled = lineSettings.userChatMessage;
 
     useEffect(() => {
-        if (!user) return;
+        if (!user && !userProfile) return;
         if (!db) return;
 
-        const userId = user?.lineId;
+        const userId = userProfile?.lineId || user?.uid;
         if (!userId) return;
 
         const usageQuery = query(
             collection(db as any, 'equipment-usage'),
             where('userId', '==', userId),
-            where('status', '==', 'active'),
+
+            where('status', 'in', ['active', 'pending_return']),
             where('type', '==', 'borrow')
         );
 
@@ -60,7 +61,7 @@ export default function MyEquipmentPage() {
         });
 
         return () => unsubscribe();
-    }, [user]);
+    }, [user, userProfile]);
 
     const handleReturn = async (usage: EquipmentUsage) => {
         if (returningId) return;
@@ -80,29 +81,17 @@ export default function MyEquipmentPage() {
 
                 if (!usageDoc.exists()) throw new Error("ไม่พบรายการยืม");
                 const currentUsage = usageDoc.data();
-                if (currentUsage.status !== 'active') throw new Error("รายการนี้ถูกคืนไปแล้ว");
+                if (currentUsage.status !== 'active') throw new Error("สถานะรายการไม่ถูกต้อง");
 
-                // 2. Prepare Data
-                const newQty = equipmentDoc.exists()
-                    ? (equipmentDoc.data().availableQuantity || 0) + usage.quantity
-                    : usage.quantity;
+                // 2. Prepare Data (REQUEST RETURN ONLY - No stock update)
+                // Just update status to pending_return
 
-                const equipmentUpdateData: any = {
-                    availableQuantity: newQty,
-                    updatedAt: Timestamp.now()
-                };
-                if (newQty > 0) equipmentUpdateData.status = 'available';
-
-                // 3. WRITE Operations last
+                // 3. WRITE Operations
                 transaction.update(usageRef, {
-                    status: 'returned',
-                    returnTime: Timestamp.now(),
+                    status: 'pending_return',
+                    returnRequestTime: Timestamp.now(),
                     updatedAt: Timestamp.now()
                 });
-
-                if (equipmentDoc.exists()) {
-                    transaction.update(equipmentRef, equipmentUpdateData);
-                }
             });
 
             // Send LINE Flex Message (optional - keeping existing logic)
@@ -114,7 +103,7 @@ export default function MyEquipmentPage() {
                         const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
                         await liff.sendMessages([{
                             type: 'flex',
-                            altText: `คืนอุปกรณ์: ${usage.equipmentName}`,
+                            altText: `แจ้งคืนอุปกรณ์: ${usage.equipmentName}`,
                             contents: {
                                 type: 'bubble',
                                 size: 'kilo',
@@ -122,7 +111,7 @@ export default function MyEquipmentPage() {
                                     type: 'box',
                                     layout: 'vertical',
                                     contents: [
-                                        { type: 'text', text: 'คืนอุปกรณ์สำเร็จ', weight: 'bold', size: 'md', color: '#333333' },
+                                        { type: 'text', text: 'แจ้งคืนสำเร็จ (รอตรวจสอบ)', weight: 'bold', size: 'md', color: '#EAB308' },
                                         { type: 'separator', margin: 'lg' },
                                         {
                                             type: 'box',
@@ -134,6 +123,7 @@ export default function MyEquipmentPage() {
                                             margin: 'lg'
                                         },
                                         { type: 'separator', margin: 'lg' },
+                                        { type: 'text', text: 'กรุณาติดต่อเจ้าหน้าที่เพื่อยืนยัน', size: 'xs', color: '#AAAAAA', margin: 'md', align: 'center' },
                                         { type: 'text', text: now, size: 'xs', color: '#AAAAAA', margin: 'lg', align: 'end' }
                                     ],
                                     paddingAll: '16px'
@@ -154,6 +144,26 @@ export default function MyEquipmentPage() {
                 console.error(err);
                 showAlert('เกิดข้อผิดพลาดในการคืนอุปกรณ์', 'error');
             }
+        }
+        setReturningId(null);
+    };
+
+    const handleCancelReturn = async (usage: EquipmentUsage) => {
+        if (returningId) return;
+        setReturningId(usage.id);
+
+        try {
+            const { doc, updateDoc, deleteField } = await import("firebase/firestore");
+            const usageRef = doc(db as any, "equipment-usage", usage.id);
+
+            await updateDoc(usageRef, {
+                status: 'active',
+                returnRequestTime: deleteField()
+            });
+
+        } catch (error) {
+            console.error(error);
+            showAlert('ไม่สามารถยกเลิกได้', 'error');
         }
         setReturningId(null);
     };
@@ -182,29 +192,16 @@ export default function MyEquipmentPage() {
 
                     if (!usageDoc.exists()) throw new Error("ไม่พบรายการยืม");
                     const currentUsage = usageDoc.data();
-                    if (currentUsage.status !== 'active') throw new Error("รายการนี้ถูกคืนไปแล้ว");
+                    if (currentUsage.status !== 'active') throw new Error("สถานะรายการไม่ถูกต้อง");
 
-                    // 2. Prepare Data
-                    const newQty = equipmentDoc.exists()
-                        ? (equipmentDoc.data().availableQuantity || 0) + usage.quantity
-                        : usage.quantity;
+                    // 2. No stock update here
 
-                    const equipmentUpdateData: any = {
-                        availableQuantity: newQty,
-                        updatedAt: Timestamp.now()
-                    };
-                    if (newQty > 0) equipmentUpdateData.status = 'available';
-
-                    // 3. WRITE Operations last
+                    // 3. WRITE Operations
                     transaction.update(usageRef, {
-                        status: 'returned',
-                        returnTime: Timestamp.now(),
+                        status: 'pending_return',
+                        returnRequestTime: Timestamp.now(),
                         updatedAt: Timestamp.now()
                     });
-
-                    if (equipmentDoc.exists()) {
-                        transaction.update(equipmentRef, equipmentUpdateData);
-                    }
                 });
                 success++;
                 returnedItems.push({ name: usage.equipmentName, qty: usage.quantity, unit: usage.unit || 'ชิ้น' });
@@ -255,7 +252,7 @@ export default function MyEquipmentPage() {
 
         setReturningAll(false);
         if (fail === 0) {
-            showAlert(`คืนสำเร็จ ${success} รายการ`, 'success');
+            showAlert(`แจ้งคืนสำเร็จ ${success} รายการ (รออนุมัติ)`, 'success');
         } else {
             showAlert(`สำเร็จ ${success} รายการ, ล้มเหลว ${fail} รายการ`, fail > 0 ? 'warning' : 'success');
         }
@@ -269,7 +266,7 @@ export default function MyEquipmentPage() {
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50">
-                <MainHeader userProfile={user} activeTab="my-equipment" setActiveTab={() => { }} />
+                <MainHeader userProfile={userProfile} activeTab="my-equipment" setActiveTab={() => { }} />
                 <div className="flex items-center justify-center py-20">
                     <div className="animate-spin h-8 w-8 border-3 border-teal-600 border-t-transparent rounded-full"></div>
                 </div>
@@ -279,7 +276,7 @@ export default function MyEquipmentPage() {
 
     return (
         <div className="min-h-screen bg-gray-50">
-            <MainHeader userProfile={user} activeTab="my-equipment" setActiveTab={() => { }} />
+            <MainHeader userProfile={userProfile} activeTab="my-equipment" setActiveTab={() => { }} />
 
             <div className="px-4 -mt-16">
                 {/* Summary Card */}
@@ -290,7 +287,7 @@ export default function MyEquipmentPage() {
                             <p className="text-sm text-gray-500">{activeUsages.length} รายการ</p>
                         </div>
                         <div className="flex gap-2">
-                            {activeUsages.length > 1 && (
+                            {activeUsages.some(u => u.status === 'active') && (
                                 <button
                                     onClick={handleReturnAll}
                                     disabled={returningAll}
@@ -352,15 +349,30 @@ export default function MyEquipmentPage() {
                                 </div>
 
                                 {/* Return Button */}
-                                <button
-                                    onClick={() => handleReturn(usage)}
-                                    disabled={returningId === usage.id}
-                                    className="px-6 py-2 text-sm border border-green-600 font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 disabled:opacity-50 transition-colors"
-                                >
-                                    {returningId === usage.id ? (
-                                        <div className="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
-                                    ) : 'คืน'}
-                                </button>
+                                {usage.status === 'pending_return' ? (
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-yellow-600 bg-yellow-50 px-2 py-1 rounded border border-yellow-200">
+                                            รอตรวจสอบ
+                                        </span>
+                                        <button
+                                            onClick={() => handleCancelReturn(usage)}
+                                            disabled={returningId === usage.id}
+                                            className="px-3 py-1 text-xs border border-gray-300 font-medium text-gray-600 bg-white rounded-lg hover:bg-gray-50 transition-colors"
+                                        >
+                                            {returningId === usage.id ? '...' : 'ยกเลิก'}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={() => handleReturn(usage)}
+                                        disabled={returningId === usage.id}
+                                        className="px-6 py-2 text-sm border border-green-600 font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 disabled:opacity-50 transition-colors"
+                                    >
+                                        {returningId === usage.id ? (
+                                            <div className="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
+                                        ) : 'คืน'}
+                                    </button>
+                                )}
                             </div>
                         ))}
                     </div>
