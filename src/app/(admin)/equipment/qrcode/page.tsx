@@ -31,7 +31,17 @@ const Icons = {
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
         </svg>
-    )
+    ),
+    Minus: ({ className }: { className?: string }) => (
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={className}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+        </svg>
+    ),
+    Plus: ({ className }: { className?: string }) => (
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={className}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+    ),
 };
 
 export default function QRCodeGeneratorPage() {
@@ -40,12 +50,12 @@ export default function QRCodeGeneratorPage() {
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [searchQuery, setSearchQuery] = useState('');
     const [categoryFilter, setCategoryFilter] = useState('all');
+    // State สำหรับเก็บจำนวนการพิมพ์ของแต่ละรายการ
+    const [printQuantities, setPrintQuantities] = useState<Record<string, number>>({});
 
     // Print ref
     const printRef = useRef<HTMLDivElement>(null);
 
-    // Using simple window.print() or react-to-print. 
-    // Since we have a sidebar overlay issue, react-to-print is better.
     const handlePrint = useReactToPrint({
         contentRef: printRef,
         documentTitle: 'Equipment-QR-Codes',
@@ -73,6 +83,10 @@ export default function QRCodeGeneratorPage() {
             newSelected.delete(id);
         } else {
             newSelected.add(id);
+            // กำหนดค่าเริ่มต้นเป็น 1 หากยังไม่มี
+            if (!printQuantities[id]) {
+                setPrintQuantities(prev => ({ ...prev, [id]: 1 }));
+            }
         }
         setSelectedIds(newSelected);
     };
@@ -83,7 +97,18 @@ export default function QRCodeGeneratorPage() {
         } else {
             const newSelected = new Set(filteredEquipment.map(e => e.id));
             setSelectedIds(newSelected);
+            // กำหนดค่าเริ่มต้น = 1 สำหรับทุกรายการที่ยังไม่มีค่า
+            const newQuantities = { ...printQuantities };
+            filteredEquipment.forEach(e => {
+                if (!newQuantities[e.id]) newQuantities[e.id] = 1;
+            });
+            setPrintQuantities(newQuantities);
         }
+    };
+
+    const updateQuantity = (id: string, value: number) => {
+        const qty = Math.max(1, Math.min(99, value || 1));
+        setPrintQuantities(prev => ({ ...prev, [id]: qty }));
     };
 
     // Filter logic
@@ -97,6 +122,17 @@ export default function QRCodeGeneratorPage() {
     });
 
     const selectedEquipment = equipment.filter(item => selectedIds.has(item.id));
+
+    // คำนวณจำนวน QR Code ทั้งหมดที่จะพิมพ์
+    const totalQRCount = selectedEquipment.reduce((sum, item) => sum + (printQuantities[item.id] || 1), 0);
+
+    // สร้าง array ของ QR Code ทั้งหมด (repeat ตามจำนวน)
+    const printItems = selectedEquipment.flatMap(item =>
+        Array.from({ length: printQuantities[item.id] || 1 }, (_, i) => ({
+            ...item,
+            printKey: `${item.id}-${i}`,
+        }))
+    );
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -113,6 +149,11 @@ export default function QRCodeGeneratorPage() {
                         <div className="flex gap-2">
                             <div className="text-sm text-gray-500 flex items-center mr-4">
                                 เลือกแล้ว {selectedIds.size} รายการ
+                                {selectedIds.size > 0 && (
+                                    <span className="ml-2 bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                                        รวม {totalQRCount} ดวง
+                                    </span>
+                                )}
                             </div>
                             <button
                                 onClick={() => handlePrint && handlePrint()}
@@ -152,14 +193,17 @@ export default function QRCodeGeneratorPage() {
 
                 {/* Checkbox List */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-8">
-                    <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center">
-                        <input
-                            type="checkbox"
-                            checked={filteredEquipment.length > 0 && selectedIds.size === filteredEquipment.length}
-                            onChange={toggleAll}
-                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-5 w-5 mr-4"
-                        />
-                        <span className="font-medium text-gray-700">เลือกทั้งหมด ({filteredEquipment.length})</span>
+                    <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                        <div className="flex items-center">
+                            <input
+                                type="checkbox"
+                                checked={filteredEquipment.length > 0 && selectedIds.size === filteredEquipment.length}
+                                onChange={toggleAll}
+                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-5 w-5 mr-4"
+                            />
+                            <span className="font-medium text-gray-700">เลือกทั้งหมด ({filteredEquipment.length})</span>
+                        </div>
+                        <span className="text-xs text-gray-400 font-medium pr-2">จำนวนพิมพ์</span>
                     </div>
 
                     {loading ? (
@@ -171,24 +215,63 @@ export default function QRCodeGeneratorPage() {
                             {filteredEquipment.map(item => (
                                 <div
                                     key={item.id}
-                                    className={`flex items-center p-4 hover:bg-gray-50 transition-colors cursor-pointer ${selectedIds.has(item.id) ? 'bg-blue-50' : ''}`}
-                                    onClick={() => toggleSelection(item.id)}
+                                    className={`flex items-center p-4 hover:bg-gray-50 transition-colors ${selectedIds.has(item.id) ? 'bg-blue-50' : ''}`}
                                 >
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedIds.has(item.id)}
-                                        onChange={() => { }} // Handle click on parent
-                                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-5 w-5 mr-4"
-                                    />
-                                    <div className="flex-1">
-                                        <div className="font-medium text-gray-900">{item.name}</div>
-                                        <div className="text-sm text-gray-500 flex gap-2">
-                                            {item.code && <span className="bg-gray-100 px-2 py-0.5 rounded text-xs">#{item.code}</span>}
-                                            {item.category && <span>• {item.category}</span>}
+                                    {/* Checkbox + Info — คลิกที่นี่เพื่อ toggle */}
+                                    <div
+                                        className="flex items-center flex-1 cursor-pointer"
+                                        onClick={() => toggleSelection(item.id)}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedIds.has(item.id)}
+                                            onChange={() => { }}
+                                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-5 w-5 mr-4"
+                                        />
+                                        <div className="flex-1">
+                                            <div className="font-medium text-gray-900">{item.name}</div>
+                                            <div className="text-sm text-gray-500 flex gap-2">
+                                                {item.code && <span className="bg-gray-100 px-2 py-0.5 rounded text-xs">#{item.code}</span>}
+                                                {item.category && <span>• {item.category}</span>}
+                                            </div>
                                         </div>
                                     </div>
+
+                                    {/* Quantity Stepper */}
+                                    <div className="flex items-center gap-1 mx-3" onClick={(e) => e.stopPropagation()}>
+                                        <button
+                                            onClick={() => updateQuantity(item.id, (printQuantities[item.id] || 1) - 1)}
+                                            disabled={!selectedIds.has(item.id)}
+                                            className="w-7 h-7 flex items-center justify-center rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            <Icons.Minus className="w-3.5 h-3.5" />
+                                        </button>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={99}
+                                            value={selectedIds.has(item.id) ? (printQuantities[item.id] || 1) : 1}
+                                            onChange={(e) => updateQuantity(item.id, parseInt(e.target.value))}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                // เลือกรายการนี้อัตโนมัติเมื่อคลิกที่ช่องจำนวน
+                                                if (!selectedIds.has(item.id)) toggleSelection(item.id);
+                                            }}
+                                            disabled={!selectedIds.has(item.id)}
+                                            className="w-12 text-center text-sm font-semibold border border-gray-300 rounded-lg py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-40 disabled:bg-gray-50"
+                                            style={{ MozAppearance: 'textfield' } as React.CSSProperties}
+                                        />
+                                        <button
+                                            onClick={() => updateQuantity(item.id, (printQuantities[item.id] || 1) + 1)}
+                                            disabled={!selectedIds.has(item.id)}
+                                            className="w-7 h-7 flex items-center justify-center rounded-full border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            <Icons.Plus className="w-3.5 h-3.5" />
+                                        </button>
+                                    </div>
+
                                     {selectedIds.has(item.id) && (
-                                        <Icons.Check className="w-5 h-5 text-blue-600" />
+                                        <Icons.Check className="w-5 h-5 text-blue-600 flex-shrink-0" />
                                     )}
                                 </div>
                             ))}
@@ -198,18 +281,24 @@ export default function QRCodeGeneratorPage() {
 
                 {/* Print Preview Area */}
                 <div id="print-area">
-                    <div className="mb-4">
-                        <h2 className="text-lg font-bold text-gray-900">ตัวอย่างก่อนพิมพ์ ({selectedEquipment.length} รายการ)</h2>
-                        <p className="text-sm text-gray-500">เลือกรายการด้านบนเพื่อแสดง QR Code จะปรากฏที่นี่</p>
+                    <div className="mb-4 flex items-center justify-between">
+                        <div>
+                            <h2 className="text-lg font-bold text-gray-900">
+                                ตัวอย่างก่อนพิมพ์ ({selectedEquipment.length} รายการ
+                                {totalQRCount > selectedEquipment.length && `, รวม ${totalQRCount} ดวง`}
+                                )
+                            </h2>
+                            <p className="text-sm text-gray-500">เลือกรายการด้านบนเพื่อแสดง QR Code จะปรากฏที่นี่</p>
+                        </div>
                     </div>
 
                     <div className="p-4 bg-white border border-gray-200 rounded-lg min-h-[200px]">
                         {/* THE CONTENT TO PRINT IS WRAPPED HERE */}
                         <div ref={printRef} className="p-4 bg-white">
-                            {selectedEquipment.length > 0 ? (
+                            {printItems.length > 0 ? (
                                 <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 print:grid-cols-4 print:gap-4">
-                                    {selectedEquipment.map(item => (
-                                        <div key={item.id} className="border border-gray-200 rounded-lg p-4 flex flex-col items-center justify-center text-center bg-white print:break-inside-avoid print:border-gray-800">
+                                    {printItems.map(item => (
+                                        <div key={item.printKey} className="border border-gray-200 rounded-lg p-4 flex flex-col items-center justify-center text-center bg-white print:break-inside-avoid print:border-gray-800">
                                             <div className="mb-2">
                                                 <QRCodeSVG
                                                     value={JSON.stringify({ id: item.id, code: item.code })}
