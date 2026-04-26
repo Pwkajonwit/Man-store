@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { db } from "@/lib/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, query, setDoc, where } from "firebase/firestore";
 import { checkAllIndexes, IndexCheckResult } from "@/lib/indexChecker";
 
 // รายการ Index ที่จำเป็นสำหรับระบบ
@@ -121,11 +121,80 @@ const generateIndexesJSON = () => {
     return JSON.stringify({ indexes, fieldOverrides: [] }, null, 2);
 };
 
+function toDate(value: any): Date | null {
+    if (!value) return null;
+    if (value instanceof Date) return value;
+    if (typeof value.toDate === "function") return value.toDate();
+    if (typeof value.seconds === "number") return new Date(value.seconds * 1000);
+
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatThaiDateTime(value: any): string {
+    const date = toDate(value);
+    if (!date) return "-";
+
+    return date.toLocaleString("th-TH", {
+        timeZone: "Asia/Bangkok",
+        dateStyle: "medium",
+        timeStyle: "short",
+    });
+}
+
+function getBangkokDateKey(value: Date) {
+    return value.toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+}
+
+function isTodayBangkok(value: any) {
+    const date = toDate(value);
+    if (!date) return false;
+
+    return getBangkokDateKey(date) === getBangkokDateKey(new Date());
+}
+
+function isOverdue(expectedReturnDate: any) {
+    const date = toDate(expectedReturnDate);
+    if (!date) return false;
+
+    return date.getTime() < Date.now();
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    });
+
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function serializeSummaryUsage(usage: any) {
+    const serializeDate = (value: any) => {
+        const date = toDate(value);
+        return date ? date.toISOString() : null;
+    };
+
+    return {
+        equipmentName: usage.equipmentName || '',
+        quantity: usage.quantity || 1,
+        returnQuantity: usage.returnQuantity || null,
+        unit: usage.unit || 'ชิ้น',
+        userName: usage.userName || '',
+        borrowTime: serializeDate(usage.borrowTime),
+        expectedReturnDate: serializeDate(usage.expectedReturnDate),
+        returnTime: serializeDate(usage.returnTime),
+        returnNote: usage.returnNote || '',
+    };
+}
+
 export default function SettingsPage() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState("");
     const [testingNotification, setTestingNotification] = useState(false);
+    const [testingSummary, setTestingSummary] = useState<"borrow" | "return" | null>(null);
     // const [showIndexes, setShowIndexes] = useState(false); // Unused
     // const [firebaseProjectId, setFirebaseProjectId] = useState(""); // Unused
 
@@ -138,15 +207,15 @@ export default function SettingsPage() {
     const [locations, setLocations] = useState<string[]>([]);
     const [newCategory, setNewCategory] = useState("");
     const [newLocation, setNewLocation] = useState("");
+    const [adminUsers, setAdminUsers] = useState<Array<{ id: string; name: string; lineId: string }>>([]);
 
     // LINE settings (Group ID only, Token from .env)
     const [lineConfig, setLineConfig] = useState({
         enabled: false,
         groupId: "",
-        dailyReportTime: "08:00",
-        notifyOverdue: true,
-        notifyLowStock: true,
-        notifyDamaged: true,
+        notifyBorrowSummary: true,
+        notifyReturnSummary: true,
+        notifyAdminUserIds: [] as string[],
         userChatMessage: true,
         notifyRepairReport: true,
         notifyRepairCompleted: true,
@@ -175,15 +244,29 @@ export default function SettingsPage() {
                     setLineConfig({
                         enabled: data.line?.enabled || false,
                         groupId: data.line?.groupId || "",
-                        dailyReportTime: data.line?.dailyReportTime || "08:00",
-                        notifyOverdue: data.line?.notifyOverdue ?? true,
-                        notifyLowStock: data.line?.notifyLowStock ?? true,
-                        notifyDamaged: data.line?.notifyDamaged ?? true,
+                        notifyBorrowSummary: data.line?.notifyBorrowSummary ?? true,
+                        notifyReturnSummary: data.line?.notifyReturnSummary ?? true,
+                        notifyAdminUserIds: Array.isArray(data.line?.notifyAdminUserIds) ? data.line.notifyAdminUserIds : [],
                         userChatMessage: data.line?.userChatMessage ?? true,
                         notifyRepairReport: data.line?.notifyRepairReport ?? true,
                         notifyRepairCompleted: data.line?.notifyRepairCompleted ?? true,
                     });
                 }
+
+                const adminSnapshot = await getDocs(query(
+                    collection(db as any, "users"),
+                    where("role", "==", "admin")
+                ));
+                setAdminUsers(adminSnapshot.docs
+                    .map((doc) => {
+                        const data = doc.data();
+                        return {
+                            id: doc.id,
+                            name: data.name || data.displayName || data.email || doc.id,
+                            lineId: data.lineId || '',
+                        };
+                    })
+                    .sort((a, b) => a.name.localeCompare(b.name, 'th')));
             } catch (error) {
                 console.error("Error loading settings:", error);
             }
@@ -211,6 +294,22 @@ export default function SettingsPage() {
         setSaving(false);
     };
 
+    const toggleNotifyAdmin = (adminId: string) => {
+        const selected = lineConfig.notifyAdminUserIds || [];
+        const nextSelected = selected.includes(adminId)
+            ? selected.filter((id) => id !== adminId)
+            : [...selected, adminId];
+
+        setLineConfig({ ...lineConfig, notifyAdminUserIds: nextSelected });
+    };
+
+    const getSelectedAdminLineIds = () => {
+        const selected = new Set(lineConfig.notifyAdminUserIds || []);
+        return adminUsers
+            .filter((admin) => selected.has(admin.id) && admin.lineId)
+            .map((admin) => admin.lineId);
+    };
+
     const testLineMessage = async () => {
         if (!lineConfig.groupId) {
             setMessage("กรุณาใส่ Group ID");
@@ -233,6 +332,91 @@ export default function SettingsPage() {
             setMessage("เกิดข้อผิดพลาดในการทดสอบ");
         }
         setTestingNotification(false);
+    };
+
+    const testEquipmentUsageSummary = async (type: "borrow" | "return") => {
+        const recipients = getSelectedAdminLineIds();
+        if (!lineConfig.groupId && recipients.length === 0) {
+            setMessage("กรุณาใส่ Group ID หรือเลือกแอดมินอย่างน้อย 1 คน");
+            return;
+        }
+
+        if (!db) {
+            setMessage("ไม่สามารถเชื่อมต่อ Firebase ได้");
+            return;
+        }
+
+        setTestingSummary(type);
+        setMessage("");
+
+        try {
+            const usageQuery = query(
+                collection(db as any, "equipment-usage"),
+                where("status", "==", type === "borrow" ? "active" : "returned"),
+                where("type", "==", "borrow"),
+                limit(50)
+            );
+            const snapshot = await withTimeout(getDocs(usageQuery), 15000, "โหลดรายการจาก Firebase นานเกินไป");
+            const usages = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+            const filteredUsages = type === "borrow"
+                ? usages.sort((a: any, b: any) => {
+                    const aExpected = toDate(a.expectedReturnDate)?.getTime() || Number.MAX_SAFE_INTEGER;
+                    const bExpected = toDate(b.expectedReturnDate)?.getTime() || Number.MAX_SAFE_INTEGER;
+                    return aExpected - bExpected;
+                })
+                : usages
+                    .filter((usage: any) => isTodayBangkok(usage.returnTime))
+                    .sort((a: any, b: any) => {
+                        const aReturnTime = toDate(a.returnTime)?.getTime() || 0;
+                        const bReturnTime = toDate(b.returnTime)?.getTime() || 0;
+                        return bReturnTime - aReturnTime;
+                    });
+            const items = filteredUsages.map(serializeSummaryUsage);
+            let pendingItems: any[] = [];
+
+            if (type === "return") {
+                const pendingQuery = query(
+                    collection(db as any, "equipment-usage"),
+                    where("status", "==", "active"),
+                    where("type", "==", "borrow"),
+                    limit(50)
+                );
+                const pendingSnapshot = await withTimeout(getDocs(pendingQuery), 15000, "โหลดรายการที่ยังไม่คืนจาก Firebase นานเกินไป");
+                pendingItems = pendingSnapshot.docs
+                    .map((doc) => ({ id: doc.id, ...doc.data() }))
+                    .sort((a: any, b: any) => {
+                        const aExpected = toDate(a.expectedReturnDate)?.getTime() || Number.MAX_SAFE_INTEGER;
+                        const bExpected = toDate(b.expectedReturnDate)?.getTime() || Number.MAX_SAFE_INTEGER;
+                        return aExpected - bExpected;
+                    })
+                    .map(serializeSummaryUsage);
+            }
+
+            const controller = new AbortController();
+            const timer = window.setTimeout(() => controller.abort(), 15000);
+            const res = await fetch("/api/equipment-usage/notifications/test-summary", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ groupId: lineConfig.groupId, recipients, type, items, pendingItems }),
+                signal: controller.signal,
+            });
+            window.clearTimeout(timer);
+            const result = await withTimeout(res.json(), 5000, "อ่านผลลัพธ์จาก API นานเกินไป");
+
+            if (result.success) {
+                const label = type === "borrow" ? "สรุปรายการยืม" : "สรุปการคืน";
+                setMessage(`ส่ง${label}สำเร็จ (${filteredUsages.length} รายการ)`);
+            } else {
+                setMessage("ส่งไม่สำเร็จ: " + (result.error || "ข้อมูลไม่ถูกต้อง"));
+            }
+        } catch (error: any) {
+            const errorMessage = error?.name === "AbortError"
+                ? "ส่งข้อความไป LINE นานเกินไป กรุณาลองใหม่"
+                : error?.message || "เกิดข้อผิดพลาดในการทดสอบส่งสรุป";
+            setMessage(errorMessage);
+        } finally {
+            setTestingSummary(null);
+        }
     };
 
     const addCategory = () => {
@@ -343,29 +527,67 @@ export default function SettingsPage() {
                                     <p className="text-xs text-gray-400 mt-1">เชิญ Bot เข้า Group แล้วจะได้ Group ID</p>
                                 </div>
 
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">เวลาส่งรายงานประจำวัน</label>
-                                    <input
-                                        type="time"
-                                        value={lineConfig.dailyReportTime}
-                                        onChange={(e) => setLineConfig({ ...lineConfig, dailyReportTime: e.target.value })}
-                                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                                    />
+                                <div className="grid grid-cols-1 gap-3">
+                                    <label className="flex items-center justify-between gap-4 p-3 bg-gray-50 rounded-lg cursor-pointer">
+                                        <div>
+                                            <p className="text-sm font-medium text-gray-700">แจ้งเตือนสรุปรายการยืม</p>
+                                            <p className="text-xs text-gray-500">ใช้กับทริกเกอร์ช่วง 09:00</p>
+                                        </div>
+                                        <input
+                                            type="checkbox"
+                                            checked={lineConfig.notifyBorrowSummary}
+                                            onChange={(e) => setLineConfig({ ...lineConfig, notifyBorrowSummary: e.target.checked })}
+                                            className="w-4 h-4 text-green-500 rounded"
+                                        />
+                                    </label>
+                                    <label className="flex items-center justify-between gap-4 p-3 bg-gray-50 rounded-lg cursor-pointer">
+                                        <div>
+                                            <p className="text-sm font-medium text-gray-700">แจ้งเตือนสรุปการคืน</p>
+                                            <p className="text-xs text-gray-500">ใช้กับทริกเกอร์ช่วง 17:00</p>
+                                        </div>
+                                        <input
+                                            type="checkbox"
+                                            checked={lineConfig.notifyReturnSummary}
+                                            onChange={(e) => setLineConfig({ ...lineConfig, notifyReturnSummary: e.target.checked })}
+                                            className="w-4 h-4 text-green-500 rounded"
+                                        />
+                                    </label>
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-1">
-                                    <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                                        <input type="checkbox" checked={lineConfig.notifyOverdue} onChange={(e) => setLineConfig({ ...lineConfig, notifyOverdue: e.target.checked })} className="w-4 h-4 text-green-500 rounded" />
-                                        <span className="text-sm text-gray-600">⏰ อุปกรณ์เกินกำหนดคืน</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                                        <input type="checkbox" checked={lineConfig.notifyLowStock} onChange={(e) => setLineConfig({ ...lineConfig, notifyLowStock: e.target.checked })} className="w-4 h-4 text-green-500 rounded" />
-                                        <span className="text-sm text-gray-600">📦 อุปกรณ์ใกล้หมดสต็อก</span>
-                                    </label>
-                                    <label className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer">
-                                        <input type="checkbox" checked={lineConfig.notifyDamaged} onChange={(e) => setLineConfig({ ...lineConfig, notifyDamaged: e.target.checked })} className="w-4 h-4 text-green-500 rounded" />
-                                        <span className="text-sm text-gray-600">🔧 อุปกรณ์ชำรุด</span>
-                                    </label>
+                                <div className="space-y-2">
+                                    <div>
+                                        <p className="text-sm font-medium text-gray-700">ส่งหาแอดมินรายคน</p>
+                                        <p className="text-xs text-gray-500">เลือกได้หลายคน ระบบจะส่งทั้ง Group ID และแอดมินที่เลือก</p>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-32 overflow-y-auto pr-1">
+                                        {adminUsers.length === 0 ? (
+                                            <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-500">
+                                                ไม่พบผู้ใช้ role admin
+                                            </div>
+                                        ) : adminUsers.map((admin) => {
+                                            const selected = lineConfig.notifyAdminUserIds.includes(admin.id);
+                                            return (
+                                                <label
+                                                    key={admin.id}
+                                                    className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-md border cursor-pointer min-h-[42px] ${admin.lineId ? 'bg-white border-gray-200 hover:bg-gray-50' : 'bg-gray-50 border-gray-100 cursor-not-allowed'}`}
+                                                >
+                                                    <div className="min-w-0 leading-tight">
+                                                        <p className="text-xs font-medium text-gray-700 truncate">{admin.name}</p>
+                                                        <p className={`text-[10px] ${admin.lineId ? 'text-gray-500' : 'text-red-500'}`}>
+                                                            {admin.lineId ? 'ผูก LINE แล้ว' : 'ยังไม่มี LINE ID'}
+                                                        </p>
+                                                    </div>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selected}
+                                                        disabled={!admin.lineId}
+                                                        onChange={() => toggleNotifyAdmin(admin.id)}
+                                                        className="w-3.5 h-3.5 text-green-500 rounded"
+                                                    />
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
 
                                 <button
@@ -375,6 +597,25 @@ export default function SettingsPage() {
                                 >
                                     {testingNotification ? 'กำลังส่ง...' : '🧪 ทดสอบส่งข้อความ (Admin Group)'}
                                 </button>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => testEquipmentUsageSummary("borrow")}
+                                        disabled={!!testingSummary || (!lineConfig.groupId && getSelectedAdminLineIds().length === 0)}
+                                        className="py-2 bg-blue-100 text-blue-700 rounded-lg text-sm font-medium hover:bg-blue-200 disabled:opacity-50"
+                                    >
+                                        {testingSummary === "borrow" ? "กำลังส่ง..." : "ทดสอบส่งสรุปรายการยืม"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => testEquipmentUsageSummary("return")}
+                                        disabled={!!testingSummary || (!lineConfig.groupId && getSelectedAdminLineIds().length === 0)}
+                                        className="py-2 bg-amber-100 text-amber-700 rounded-lg text-sm font-medium hover:bg-amber-200 disabled:opacity-50"
+                                    >
+                                        {testingSummary === "return" ? "กำลังส่ง..." : "ทดสอบส่งสรุปการคืน"}
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
