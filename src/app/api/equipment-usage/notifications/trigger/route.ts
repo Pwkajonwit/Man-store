@@ -151,6 +151,34 @@ async function getTodayReturnedUsages(): Promise<any[]> {
         });
 }
 
+async function getLowStockEquipment(): Promise<any[]> {
+    const snapshot = await admin.firestore()
+        .collection('equipment')
+        .get();
+
+    return snapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((item: any) => {
+            const minStock = Number(item.minStock || 0);
+            if (minStock <= 0) return false;
+            if (item.status === 'retired' || item.status === 'lost') return false;
+
+            const available = Number(item.availableQuantity ?? item.quantity ?? 0);
+            return available <= minStock;
+        })
+        .sort((a: any, b: any) => {
+            const aAvailable = Number(a.availableQuantity ?? a.quantity ?? 0);
+            const bAvailable = Number(b.availableQuantity ?? b.quantity ?? 0);
+            if (aAvailable !== bAvailable) return aAvailable - bAvailable;
+
+            const aMin = Number(a.minStock || 0);
+            const bMin = Number(b.minStock || 0);
+            if (aMin !== bMin) return bMin - aMin;
+
+            return String(a.name || '').localeCompare(String(b.name || ''), 'th');
+        });
+}
+
 async function getSettingsGroupId() {
     try {
         const doc = await admin.firestore()
@@ -289,6 +317,7 @@ async function handleTrigger(request: Request) {
 
     const activeBorrowUsages = await getActiveBorrowUsages();
     const returnedUsages = type === 'evening' ? await getTodayReturnedUsages() : [];
+    const lowStockEquipment = type === 'morning' ? await getLowStockEquipment() : [];
     const recipients = await getRecipients(body);
 
     if (recipients.length === 0) {
@@ -308,6 +337,7 @@ async function handleTrigger(request: Request) {
         : equipmentSummaryFlex('borrow', activeBorrowUsages, {
             title: 'สรุปรายการยืม',
             generatedAt: new Date(),
+            lowStockItems: lowStockEquipment,
         });
     const results = { sent: [] as string[], errors: [] as Array<{ to: string; error: string }> };
 
@@ -328,6 +358,7 @@ async function handleTrigger(request: Request) {
             format: 'flex',
             activeBorrowCount: activeBorrowUsages.length,
             returnedCount: returnedUsages.length,
+            lowStockCount: lowStockEquipment.length,
             overdueCount: activeBorrowUsages.filter((usage) => isOverdue(usage.expectedReturnDate)).length,
             recipientsCount: recipients.length,
             sentCount: results.sent.length,
@@ -343,6 +374,7 @@ async function handleTrigger(request: Request) {
         type,
         activeBorrowCount: activeBorrowUsages.length,
         returnedCount: returnedUsages.length,
+        lowStockCount: lowStockEquipment.length,
         overdueCount: activeBorrowUsages.filter((usage) => isOverdue(usage.expectedReturnDate)).length,
         recipientsCount: recipients.length,
         results,

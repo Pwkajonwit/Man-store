@@ -31,10 +31,9 @@ export default function useLiffAuth(): UseLiffAuthReturn {
                 // =====================================================
                 // DEVELOPMENT MODE: ใช้ Mock User
                 // =====================================================
-                const isDev = process.env.NODE_ENV === 'development';
                 const useMockLiff = process.env.NEXT_PUBLIC_MOCK_LIFF === 'true';
 
-                if (isDev && useMockLiff) {
+                if (useMockLiff) {
                     console.log('🔧 Development Mode: Using Mock User Profile');
 
                     // Mock user profile สำหรับ development

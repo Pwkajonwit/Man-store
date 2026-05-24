@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { collection, query, orderBy, limit, getDocs, startAfter, QueryDocumentSnapshot, DocumentData, where, Timestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Link from "next/link";
+import Image from "next/image";
 
 const ITEMS_PER_PAGE = 100; // โหลดจาก Firestore ครั้งละ 100 รายการ
 
@@ -13,8 +14,19 @@ interface EquipmentUsageHistory {
     status?: string;
     equipmentName?: string;
     equipmentCategory?: string;
+    equipmentCode?: string;
+    categoryCode?: string;
+    categoryName?: string;
+    categoryPhase?: string;
     equipmentLocation?: string;
     userName?: string;
+    userId?: string;
+    requestedByUserName?: string;
+    requestedByUserId?: string;
+    borrowFor?: boolean;
+    borrowerName?: string;
+    attachmentImageUrl?: string;
+    attachmentFileName?: string;
     quantity?: number;
     unit?: string;
     borrowTime?: Date;
@@ -24,7 +36,36 @@ interface EquipmentUsageHistory {
 }
 
 // Memoized History Item Component
-const HistoryItem = memo(function HistoryItem({ item, formatDate }: { item: EquipmentUsageHistory; formatDate: (date: Date | undefined) => string }) {
+const HistoryItem = memo(function HistoryItem({
+    item,
+    formatDate,
+    onPreviewImage,
+}: {
+    item: EquipmentUsageHistory;
+    formatDate: (date: Date | undefined) => string;
+    onPreviewImage: (url: string, title: string) => void;
+}) {
+    const categoryLabel = item.categoryCode && item.categoryName
+        ? `${item.categoryCode} - ${item.categoryName}`
+        : item.equipmentCategory;
+    const actorLabel = item.borrowFor
+        ? `${item.borrowerName || item.userName || '-'} (ยืมแทนโดย ${item.requestedByUserName || '-'})`
+        : item.userName;
+    const statusLabel = item.status === 'returned'
+        ? 'คืนแล้ว'
+        : item.status === 'pending_return'
+            ? 'รอตรวจสอบ'
+            : item.status === 'active'
+                ? 'กำลังยืม'
+                : 'เบิกแล้ว';
+    const statusClass = item.status === 'returned'
+        ? 'bg-green-100 text-green-700'
+        : item.status === 'pending_return'
+            ? 'bg-amber-100 text-amber-700'
+            : item.status === 'active'
+                ? 'bg-yellow-100 text-yellow-700'
+                : 'bg-gray-100 text-gray-600';
+
     return (
         <div className="bg-white rounded-xl shadow-sm p-3 flex items-center gap-3">
             {/* Type Badge */}
@@ -68,6 +109,88 @@ const HistoryItem = memo(function HistoryItem({ item, formatDate }: { item: Equi
     );
 });
 
+const EnhancedHistoryItem = memo(function EnhancedHistoryItem({
+    item,
+    formatDate,
+    onPreviewImage,
+}: {
+    item: EquipmentUsageHistory;
+    formatDate: (date: Date | undefined) => string;
+    onPreviewImage: (url: string, title: string) => void;
+}) {
+    const categoryLabel = item.categoryCode && item.categoryName
+        ? `${item.categoryCode} - ${item.categoryName}`
+        : item.equipmentCategory;
+    const actorLabel = item.borrowFor
+        ? `${item.borrowerName || item.userName || '-'} (ยืมแทนโดย ${item.requestedByUserName || '-'})`
+        : item.userName;
+    const statusLabel = item.status === 'returned'
+        ? 'คืนแล้ว'
+        : item.status === 'pending_return'
+            ? 'รอตรวจสอบ'
+            : item.status === 'active'
+                ? 'กำลังยืม'
+                : 'เบิกแล้ว';
+    const statusClass = item.status === 'returned'
+        ? 'bg-green-100 text-green-700'
+        : item.status === 'pending_return'
+            ? 'bg-amber-100 text-amber-700'
+            : item.status === 'active'
+                ? 'bg-yellow-100 text-yellow-700'
+                : 'bg-gray-100 text-gray-600';
+
+    return (
+        <div className="bg-white rounded-xl shadow-sm p-3 flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${item.type === 'borrow' ? 'bg-blue-100' : 'bg-purple-100'}`}>
+                {item.type === 'borrow' ? (
+                    <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                ) : (
+                    <svg className="w-5 h-5 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                    </svg>
+                )}
+            </div>
+
+            <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                    <h3 className="font-medium text-gray-800 text-sm truncate">{item.equipmentName}</h3>
+                    {item.borrowFor && <span className="shrink-0 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-[10px] font-medium">ยืมแทน</span>}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 mt-0.5">
+                    <span className="truncate max-w-[220px]">{actorLabel}</span>
+                    <span>•</span>
+                    <span>{item.quantity} {item.unit}</span>
+                    <span>•</span>
+                    <span>{formatDate(item.borrowTime || item.withdrawTime)}</span>
+                    {categoryLabel && <><span>•</span><span className="truncate max-w-[180px]">{categoryLabel}</span></>}
+                    {item.categoryPhase && <><span>•</span><span className="truncate max-w-[180px]">{item.categoryPhase}</span></>}
+                    {item.equipmentLocation && <><span>•</span><span className="truncate max-w-[160px]">{item.equipmentLocation}</span></>}
+                </div>
+            </div>
+
+            {item.attachmentImageUrl && (
+                <button
+                    type="button"
+                    onClick={() => onPreviewImage(item.attachmentImageUrl || '', item.equipmentName || 'รูปแนบ')}
+                    className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 hover:ring-2 hover:ring-teal-200 transition"
+                    title="ดูรูปแนบ"
+                >
+                    <Image src={item.attachmentImageUrl} alt="attachment" fill className="object-cover" sizes="48px" unoptimized />
+                </button>
+            )}
+
+            <div className="flex flex-col items-end gap-1">
+                <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${item.type === 'borrow' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {item.type === 'borrow' ? 'ยืม' : 'เบิก'}
+                </span>
+                <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${statusClass}`}>{statusLabel}</span>
+            </div>
+        </div>
+    );
+});
+
 // Debounce hook
 function useDebounce<T>(value: T, delay: number): T {
     const [debouncedValue, setDebouncedValue] = useState<T>(value);
@@ -89,6 +212,7 @@ export default function EquipmentHistoryAdminPage() {
     const [locationFilter, setLocationFilter] = useState('all');
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
+    const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
     const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
     const [hasMoreData, setHasMoreData] = useState(true);
 
@@ -157,7 +281,7 @@ export default function EquipmentHistoryAdminPage() {
 
     // Memoized unique categories and locations
     const { categories, locations } = useMemo(() => ({
-        categories: [...new Set(history.map(item => item.equipmentCategory).filter(Boolean))],
+        categories: [...new Set(history.map(item => item.categoryName || item.equipmentCategory).filter(Boolean))],
         locations: [...new Set(history.map(item => item.equipmentLocation).filter(Boolean))]
     }), [history]);
 
@@ -172,11 +296,16 @@ export default function EquipmentHistoryAdminPage() {
         return history.filter(item => {
             const matchType = activeTab === 'all' || item.type === activeTab;
             const matchStatus = statusFilter === 'all' || item.status === statusFilter;
-            const matchCategory = categoryFilter === 'all' || item.equipmentCategory === categoryFilter;
+            const matchCategory = categoryFilter === 'all' || item.equipmentCategory === categoryFilter || item.categoryName === categoryFilter;
             const matchLocation = locationFilter === 'all' || item.equipmentLocation === locationFilter;
             const matchSearch = !debouncedSearch ||
                 item.equipmentName?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-                item.userName?.toLowerCase().includes(debouncedSearch.toLowerCase());
+                item.userName?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                item.borrowerName?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                item.requestedByUserName?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                item.categoryCode?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                item.categoryName?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                item.categoryPhase?.toLowerCase().includes(debouncedSearch.toLowerCase());
 
             // Date filter
             const itemDate = new Date(item.borrowTime || item.withdrawTime || new Date());
@@ -285,6 +414,7 @@ export default function EquipmentHistoryAdminPage() {
                         >
                             <option value="all">ทุกสถานะ</option>
                             <option value="active">กำลังยืม</option>
+                            <option value="pending_return">รอตรวจสอบคืน</option>
                             <option value="returned">คืนแล้ว</option>
                             <option value="completed">เบิกแล้ว</option>
                         </select>
@@ -376,7 +506,12 @@ export default function EquipmentHistoryAdminPage() {
                 <>
                     <div className="space-y-2">
                         {paginatedItems.map(item => (
-                            <HistoryItem key={item.id} item={item} formatDate={formatDate} />
+                            <EnhancedHistoryItem
+                                key={item.id}
+                                item={item}
+                                formatDate={formatDate}
+                                onPreviewImage={(url, title) => setPreviewImage({ url, title })}
+                            />
                         ))}
                     </div>
 
@@ -471,6 +606,42 @@ export default function EquipmentHistoryAdminPage() {
                         </div>
                     )}
                 </>
+            )}
+
+            {previewImage && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                    onClick={() => setPreviewImage(null)}
+                >
+                    <div
+                        className="w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                            <div className="min-w-0">
+                                <h3 className="truncate text-sm font-semibold text-gray-900">{previewImage.title}</h3>
+                                <p className="text-xs text-gray-500">รูปแนบการยืม</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setPreviewImage(null)}
+                                className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+                            >
+                                ปิด
+                            </button>
+                        </div>
+                        <div className="relative h-[70vh] bg-gray-950">
+                            <Image
+                                src={previewImage.url}
+                                alt="attachment preview"
+                                fill
+                                className="object-contain"
+                                sizes="90vw"
+                                unoptimized
+                            />
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

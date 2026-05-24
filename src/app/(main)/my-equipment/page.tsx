@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
 import { useRouter } from "next/navigation";
-import { db } from "@/lib/firebase";
+import { db, storage } from "@/lib/firebase";
 import { query, collection, where, onSnapshot } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import MainHeader from '@/components/main/MainHeader';
 import Image from 'next/image';
 // import liff from '@line/liff'; // Import dynamically to avoid SSR issues if package not optimized
@@ -19,7 +20,21 @@ interface EquipmentUsage {
     quantity: number;
     unit?: string;
     borrowTime?: any; // Timestamp or Date
+    userId?: string;
+    userName?: string;
+    requestedByUserId?: string;
+    requestedByUserName?: string;
+    borrowFor?: boolean;
+    borrowerName?: string;
     [key: string]: any;
+}
+
+interface UsageGroup {
+    key: string;
+    title: string;
+    subtitle: string;
+    items: EquipmentUsage[];
+    isBorrowFor: boolean;
 }
 
 export default function MyEquipmentPage() {
@@ -30,10 +45,25 @@ export default function MyEquipmentPage() {
     const [loading, setLoading] = useState(true);
     const [returningId, setReturningId] = useState<string | null>(null);
     const [returningAll, setReturningAll] = useState(false);
+    const [returnItem, setReturnItem] = useState<EquipmentUsage | null>(null);
+    const [returnGroup, setReturnGroup] = useState<UsageGroup | null>(null);
+    const [returnReason, setReturnReason] = useState("");
+    const [returnImageFile, setReturnImageFile] = useState<File | null>(null);
+    const [returnImagePreview, setReturnImagePreview] = useState("");
+    const returnImageInputRef = useRef<HTMLInputElement | null>(null);
     const { showAlert, showConfirm } = useModal();
 
     // Get LINE settings from context (loaded once in layout)
     const userChatMessageEnabled = lineSettings.userChatMessage;
+    const viewerUserId = userProfile?.lineId || user?.uid || '';
+    const isBorrowForUsage = (usage: EquipmentUsage) => {
+        if (usage.borrowFor === true) return true;
+        if (!usage.requestedByUserId || !viewerUserId) return false;
+        if (usage.requestedByUserId !== viewerUserId) return false;
+
+        const borrowerName = (usage.borrowerName || '').trim();
+        return Boolean(borrowerName) && borrowerName !== (usage.requestedByUserName || '').trim();
+    };
 
     useEffect(() => {
         if (!user && !userProfile) return;
@@ -44,18 +74,26 @@ export default function MyEquipmentPage() {
 
         const usageQuery = query(
             collection(db as any, 'equipment-usage'),
-            where('userId', '==', userId),
-
             where('status', 'in', ['active', 'pending_return']),
             where('type', '==', 'borrow')
         );
 
         const unsubscribe = onSnapshot(usageQuery, (snapshot) => {
-            const usagesData = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                borrowTime: doc.data().borrowTime?.toDate?.() || doc.data().borrowTime,
-            })) as EquipmentUsage[];
+            const usagesData = snapshot.docs
+                .map(doc => {
+                    const data = doc.data();
+                    return {
+                        id: doc.id,
+                        ...data,
+                        borrowTime: data.borrowTime?.toDate?.() || data.borrowTime,
+                    } as EquipmentUsage;
+                })
+                .filter(usage => usage.userId === userId || usage.requestedByUserId === userId)
+                .sort((a, b) => {
+                    const aTime = a.borrowTime ? new Date(a.borrowTime).getTime() : 0;
+                    const bTime = b.borrowTime ? new Date(b.borrowTime).getTime() : 0;
+                    return bTime - aTime;
+                });
             setActiveUsages(usagesData);
             setLoading(false);
         });
@@ -63,36 +101,133 @@ export default function MyEquipmentPage() {
         return () => unsubscribe();
     }, [user, userProfile]);
 
+    useEffect(() => {
+        return () => {
+            if (returnImagePreview) {
+                URL.revokeObjectURL(returnImagePreview);
+            }
+        };
+    }, [returnImagePreview]);
+
+    const clearReturnImage = () => {
+        if (returnImagePreview) {
+            URL.revokeObjectURL(returnImagePreview);
+        }
+        setReturnImageFile(null);
+        setReturnImagePreview("");
+        if (returnImageInputRef.current) {
+            returnImageInputRef.current.value = "";
+        }
+    };
+
+    const closeReturnGroupModal = () => {
+        if (returningAll) return;
+        setReturnGroup(null);
+        setReturnReason("");
+        clearReturnImage();
+    };
+
+    const openReturnItemModal = (usage: EquipmentUsage) => {
+        setReturnItem(usage);
+        setReturnReason("");
+        clearReturnImage();
+    };
+
+    const closeReturnItemModal = () => {
+        if (returningId) return;
+        setReturnItem(null);
+        setReturnReason("");
+        clearReturnImage();
+    };
+
+    const handleReturnImageChange = (file?: File | null) => {
+        if (returnImagePreview) {
+            URL.revokeObjectURL(returnImagePreview);
+        }
+
+        if (!file) {
+            setReturnImageFile(null);
+            setReturnImagePreview("");
+            return;
+        }
+
+        setReturnImageFile(file);
+        setReturnImagePreview(URL.createObjectURL(file));
+    };
+
     const handleReturn = async (usage: EquipmentUsage) => {
         if (returningId) return;
         setReturningId(usage.id);
 
         try {
-            // Import Firestore functions dynamically
+            const uploaded = await uploadReturnImage();
             const { doc, runTransaction, Timestamp } = await import("firebase/firestore");
 
             await runTransaction(db as any, async (transaction) => {
-                // 1. READ Operations first
+                const settingRef = doc(db as any, "settings", "equipment");
                 const usageRef = doc(db as any, "equipment-usage", usage.id);
+
+                const settingDoc = await transaction.get(settingRef);
+                const approvalEnabled = settingDoc.exists()
+                    ? settingDoc.data().returnApprovalEnabled ?? true
+                    : true;
+
                 const usageDoc = await transaction.get(usageRef);
-
-                const equipmentRef = doc(db as any, "equipment", usage.equipmentId);
-                const equipmentDoc = await transaction.get(equipmentRef);
-
                 if (!usageDoc.exists()) throw new Error("ไม่พบรายการยืม");
+
                 const currentUsage = usageDoc.data();
-                if (currentUsage.status !== 'active') throw new Error("สถานะรายการไม่ถูกต้อง");
+                if (currentUsage.status !== "active") {
+                    throw new Error("รายการนี้ถูกคืนไปแล้ว");
+                }
 
-                // 2. Prepare Data (REQUEST RETURN ONLY - No stock update)
-                // Just update status to pending_return
-
-                // 3. WRITE Operations
-                transaction.update(usageRef, {
-                    status: 'pending_return',
+                const returnPayload: any = {
                     returnRequestTime: Timestamp.now(),
-                    updatedAt: Timestamp.now()
+                    returnNote: returnReason.trim(),
+                    returnAttachmentImageUrl: uploaded.url,
+                    returnAttachmentFileName: uploaded.fileName,
+                    updatedAt: Timestamp.now(),
+                };
+
+                if (approvalEnabled) {
+                    transaction.update(usageRef, {
+                        ...returnPayload,
+                        status: 'pending_return',
+                    });
+                    return;
+                }
+
+                const equipmentRef = doc(db as any, "equipment", currentUsage.equipmentId);
+                const equipmentDoc = await transaction.get(equipmentRef);
+                const qtyToReturn = currentUsage.quantity || 0;
+
+                transaction.update(usageRef, {
+                    ...returnPayload,
+                    status: "returned",
+                    returnTime: Timestamp.now(),
+                    returnQuantity: qtyToReturn,
+                    approverId: "auto",
                 });
+
+                if (equipmentDoc.exists()) {
+                    const equipmentData = equipmentDoc.data();
+                    const newAvailableQuantity = (equipmentData.availableQuantity || 0) + qtyToReturn;
+                    const updateData: any = {
+                        availableQuantity: newAvailableQuantity,
+                        updatedAt: Timestamp.now(),
+                    };
+
+                    if (equipmentData.status === "out_of_stock" && newAvailableQuantity > 0) {
+                        updateData.status = "available";
+                    }
+
+                    transaction.update(equipmentRef, updateData);
+                }
             });
+
+            showAlert('แจ้งคืนสำเร็จ', 'success');
+            setReturnItem(null);
+            setReturnReason("");
+            clearReturnImage();
 
             // Send LINE Flex Message (optional - keeping existing logic)
             if (userChatMessageEnabled) {
@@ -112,6 +247,10 @@ export default function MyEquipmentPage() {
                                     layout: 'vertical',
                                     contents: [
                                         { type: 'text', text: 'แจ้งคืนสำเร็จ (รอตรวจสอบ)', weight: 'bold', size: 'md', color: '#EAB308' },
+                                        ...(isBorrowForUsage(usage) ? [
+                                            { type: 'text', text: `ผู้ยืม: ${usage.borrowerName || usage.userName || '-'}`, size: 'xs', color: '#D97706', margin: 'sm', wrap: true },
+                                            { type: 'text', text: `ทำแทนโดย: ${usage.requestedByUserName || '-'}`, size: 'xs', color: '#D97706', margin: 'xxs', wrap: true },
+                                        ] : []),
                                         { type: 'separator', margin: 'lg' },
                                         {
                                             type: 'box',
@@ -158,7 +297,10 @@ export default function MyEquipmentPage() {
 
             await updateDoc(usageRef, {
                 status: 'active',
-                returnRequestTime: deleteField()
+                returnRequestTime: deleteField(),
+                returnNote: deleteField(),
+                returnAttachmentImageUrl: deleteField(),
+                returnAttachmentFileName: deleteField()
             });
 
         } catch (error) {
@@ -168,43 +310,183 @@ export default function MyEquipmentPage() {
         setReturningId(null);
     };
 
+    const uploadReturnImage = async () => {
+        if (!returnImageFile) return { url: "", fileName: "" };
+
+        const extension = returnImageFile.name.split('.').pop() || 'jpg';
+        const fileRef = ref(storage, `equipment-return-attachments/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`);
+        await uploadBytes(fileRef, returnImageFile);
+        const url = await getDownloadURL(fileRef);
+        return { url, fileName: returnImageFile.name };
+    };
+
+    const handleReturnGroupSubmit = async () => {
+        if (!returnGroup || returningAll) return;
+        const returnableUsages = returnGroup.items.filter(usage => usage.status === 'active');
+        if (returnableUsages.length === 0) return;
+
+        setReturningAll(true);
+        let success = 0;
+        let fail = 0;
+
+        try {
+            const uploaded = await uploadReturnImage();
+            const { doc, runTransaction, Timestamp } = await import("firebase/firestore");
+
+            for (const usage of returnableUsages) {
+                try {
+                    await runTransaction(db as any, async (transaction) => {
+                        const settingRef = doc(db as any, "settings", "equipment");
+                        const usageRef = doc(db as any, "equipment-usage", usage.id);
+                        const settingDoc = await transaction.get(settingRef);
+                        const approvalEnabled = settingDoc.exists()
+                            ? settingDoc.data().returnApprovalEnabled ?? true
+                            : true;
+                        const usageDoc = await transaction.get(usageRef);
+
+                        if (!usageDoc.exists()) throw new Error("ไม่พบรายการยืม");
+                        const currentUsage = usageDoc.data();
+                        if (currentUsage.status !== 'active') throw new Error("สถานะรายการไม่ถูกต้อง");
+
+                        const returnPayload: any = {
+                            returnRequestTime: Timestamp.now(),
+                            returnNote: returnReason.trim(),
+                            returnAttachmentImageUrl: uploaded.url,
+                            returnAttachmentFileName: uploaded.fileName,
+                            updatedAt: Timestamp.now(),
+                        };
+
+                        if (approvalEnabled) {
+                            transaction.update(usageRef, {
+                                ...returnPayload,
+                                status: 'pending_return',
+                            });
+                            return;
+                        }
+
+                        const equipmentRef = doc(db as any, "equipment", currentUsage.equipmentId);
+                        const equipmentDoc = await transaction.get(equipmentRef);
+                        const qtyToReturn = currentUsage.quantity || 0;
+
+                        transaction.update(usageRef, {
+                            ...returnPayload,
+                            status: "returned",
+                            returnTime: Timestamp.now(),
+                            returnQuantity: qtyToReturn,
+                            approverId: "auto",
+                        });
+
+                        if (equipmentDoc.exists()) {
+                            const equipmentData = equipmentDoc.data();
+                            const newAvailableQuantity = (equipmentData.availableQuantity || 0) + qtyToReturn;
+                            const updateData: any = {
+                                availableQuantity: newAvailableQuantity,
+                                updatedAt: Timestamp.now(),
+                            };
+
+                            if (equipmentData.status === "out_of_stock" && newAvailableQuantity > 0) {
+                                updateData.status = "available";
+                            }
+
+                            transaction.update(equipmentRef, updateData);
+                        }
+                    });
+                    success++;
+                } catch (error) {
+                    console.error("Return group item failed:", usage.id, error);
+                    fail++;
+                }
+            }
+        } catch (error) {
+            console.error(error);
+            fail = returnableUsages.length;
+        }
+
+        setReturningAll(false);
+        if (fail === 0) {
+            showAlert(`แจ้งคืนสำเร็จ ${success} รายการ (รออนุมัติ)`, 'success');
+            closeReturnGroupModal();
+        } else {
+            showAlert(`สำเร็จ ${success} รายการ, ล้มเหลว ${fail} รายการ`, 'warning');
+        }
+    };
+
     const handleReturnAll = async () => {
-        if (activeUsages.length === 0 || returningAll) return;
-        const confirmed = await showConfirm(`ต้องการคืนอุปกรณ์ทั้งหมด ${activeUsages.length} รายการ?`, { confirmText: 'คืนทั้งหมด', cancelText: 'ยกเลิก' });
+        const returnableUsages = activeUsages.filter(usage => usage.status === 'active');
+        if (returnableUsages.length === 0 || returningAll) return;
+        const confirmed = await showConfirm(`ต้องการคืนอุปกรณ์ทั้งหมด ${returnableUsages.length} รายการ?`, { confirmText: 'คืนทั้งหมด', cancelText: 'ยกเลิก' });
         if (!confirmed) return;
 
         setReturningAll(true);
         let success = 0, fail = 0;
-        const returnedItems: { name: string, qty: number, unit: string }[] = [];
+        const returnedItems: { name: string, qty: number, unit: string, borrowFor?: boolean, borrowerName?: string, requestedByUserName?: string }[] = [];
 
         // Import Firestore functions dynamically
         const { doc, runTransaction, Timestamp } = await import("firebase/firestore");
 
-        for (const usage of activeUsages) {
+        for (const usage of returnableUsages) {
             try {
                 await runTransaction(db as any, async (transaction) => {
                     // 1. READ Operations first
+                    const settingRef = doc(db as any, "settings", "equipment");
                     const usageRef = doc(db as any, "equipment-usage", usage.id);
+                    const settingDoc = await transaction.get(settingRef);
+                    const approvalEnabled = settingDoc.exists()
+                        ? settingDoc.data().returnApprovalEnabled ?? true
+                        : true;
                     const usageDoc = await transaction.get(usageRef);
-
-                    const equipmentRef = doc(db as any, "equipment", usage.equipmentId);
-                    const equipmentDoc = await transaction.get(equipmentRef);
 
                     if (!usageDoc.exists()) throw new Error("ไม่พบรายการยืม");
                     const currentUsage = usageDoc.data();
                     if (currentUsage.status !== 'active') throw new Error("สถานะรายการไม่ถูกต้อง");
 
-                    // 2. No stock update here
+                    if (approvalEnabled) {
+                        transaction.update(usageRef, {
+                            status: 'pending_return',
+                            returnRequestTime: Timestamp.now(),
+                            updatedAt: Timestamp.now()
+                        });
+                        return;
+                    }
 
-                    // 3. WRITE Operations
+                    const equipmentRef = doc(db as any, "equipment", currentUsage.equipmentId);
+                    const equipmentDoc = await transaction.get(equipmentRef);
+                    const qtyToReturn = currentUsage.quantity || 0;
+
                     transaction.update(usageRef, {
-                        status: 'pending_return',
+                        status: "returned",
+                        returnTime: Timestamp.now(),
                         returnRequestTime: Timestamp.now(),
+                        returnQuantity: qtyToReturn,
+                        returnNote: "",
+                        approverId: "auto",
                         updatedAt: Timestamp.now()
                     });
+
+                    if (equipmentDoc.exists()) {
+                        const equipmentData = equipmentDoc.data();
+                        const newAvailableQuantity = (equipmentData.availableQuantity || 0) + qtyToReturn;
+                        const updateData: any = {
+                            availableQuantity: newAvailableQuantity,
+                            updatedAt: Timestamp.now(),
+                        };
+
+                        if (equipmentData.status === "out_of_stock" && newAvailableQuantity > 0) {
+                            updateData.status = "available";
+                        }
+
+                        transaction.update(equipmentRef, updateData);
+                    }
                 });
                 success++;
-                returnedItems.push({ name: usage.equipmentName, qty: usage.quantity, unit: usage.unit || 'ชิ้น' });
+                returnedItems.push({
+                    name: usage.equipmentName,
+                    qty: usage.quantity,
+                    unit: usage.unit || 'ชิ้น',
+                    borrowFor: isBorrowForUsage(usage),
+                    borrowerName: usage.borrowerName || usage.userName,
+                    requestedByUserName: usage.requestedByUserName,
+                });
             } catch { fail++; }
         }
 
@@ -216,10 +498,19 @@ export default function MyEquipmentPage() {
                     const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
                     const itemContents = returnedItems.map(item => ({
                         type: 'box',
-                        layout: 'horizontal',
+                        layout: 'vertical',
                         contents: [
-                            { type: 'text', text: item.name, size: 'sm', color: '#333333', flex: 3 },
-                            { type: 'text', text: `${item.qty} ${item.unit}`, size: 'sm', color: '#888888', align: 'end', flex: 1 }
+                            {
+                                type: 'box',
+                                layout: 'horizontal',
+                                contents: [
+                                    { type: 'text', text: item.name, size: 'sm', color: '#333333', flex: 3 },
+                                    { type: 'text', text: `${item.qty} ${item.unit}`, size: 'sm', color: '#888888', align: 'end', flex: 1 }
+                                ]
+                            },
+                            ...(item.borrowFor ? [
+                                { type: 'text', text: `ยืมแทน: ${item.borrowerName || '-'} • โดย ${item.requestedByUserName || '-'}`, size: 'xxs', color: '#D97706', margin: 'xxs', wrap: true }
+                            ] : [])
                         ]
                     }));
 
@@ -263,6 +554,36 @@ export default function MyEquipmentPage() {
         return new Date(date).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' });
     };
 
+    const usageGroups = useMemo<UsageGroup[]>(() => {
+        const groups = new Map<string, UsageGroup>();
+
+        for (const usage of activeUsages) {
+            const borrower = (usage.borrowerName || usage.userName || '').trim();
+            const isBorrowFor = isBorrowForUsage(usage);
+            const key = isBorrowFor ? `borrow-for:${borrower || usage.userId || 'unknown'}` : 'mine';
+
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    key,
+                    title: isBorrowFor ? `ยืมแทน: ${borrower || 'ไม่ระบุชื่อ'}` : 'ยืมของฉัน',
+                    subtitle: isBorrowFor ? 'รายการที่คุณทำแทนพนักงานคนนี้' : 'รายการที่ผูกกับบัญชีของคุณ',
+                    items: [],
+                    isBorrowFor,
+                });
+            }
+
+            groups.get(key)?.items.push(usage);
+        }
+
+        return Array.from(groups.values()).sort((a, b) => {
+            if (a.key === 'mine') return -1;
+            if (b.key === 'mine') return 1;
+            return a.title.localeCompare(b.title, 'th');
+        });
+    }, [activeUsages, viewerUserId]);
+    const ownReturnGroup = usageGroups.find(group => group.key === 'mine');
+    const ownReturnableCount = ownReturnGroup?.items.filter(item => item.status === 'active').length || 0;
+
     if (loading) {
         return (
             <div className="min-h-screen bg-gray-50">
@@ -287,9 +608,9 @@ export default function MyEquipmentPage() {
                             <p className="text-sm text-gray-500">{activeUsages.length} รายการ</p>
                         </div>
                         <div className="flex gap-2">
-                            {activeUsages.some(u => u.status === 'active') && (
+                            {ownReturnGroup && ownReturnableCount > 0 && (
                                 <button
-                                    onClick={handleReturnAll}
+                                    onClick={() => setReturnGroup(ownReturnGroup)}
                                     disabled={returningAll}
                                     className="px-3 py-2 text-sm font-medium text-orange-600 bg-orange-50 rounded-lg hover:bg-orange-100 disabled:opacity-50"
                                 >
@@ -322,8 +643,40 @@ export default function MyEquipmentPage() {
                     </div>
                 ) : (
                     /* Equipment List - Compact */
-                    <div className="space-y-2">
-                        {activeUsages.map(usage => (
+                    <div className="space-y-4">
+                        {usageGroups.map(group => (
+                            <section key={group.key} className="space-y-2">
+                                {group.isBorrowFor && (
+                                    <div className="rounded-xl px-4 py-3 border shadow-sm bg-amber-50 border-amber-100">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <h3 className="font-semibold truncate text-amber-900">
+                                                    {group.title}
+                                                </h3>
+                                                <p className="text-xs truncate text-amber-700">
+                                                    {group.subtitle}
+                                                </p>
+                                            </div>
+                                            <div className="shrink-0 flex items-center gap-2">
+                                                {group.items.some(item => item.status === 'active') && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setReturnGroup(group)}
+                                                        disabled={returningAll}
+                                                        className="px-3 py-1.5 rounded-lg text-white text-xs font-semibold disabled:opacity-50 bg-amber-600 hover:bg-amber-700"
+                                                    >
+                                                        คืนทั้งหมด
+                                                    </button>
+                                                )}
+                                                <span className="rounded-full px-2.5 py-1 text-xs font-semibold bg-amber-100 text-amber-800">
+                                                    {group.items.length} รายการ
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {group.items.map(usage => (
                             <div key={usage.id} className="bg-white rounded-xl shadow-sm p-3 flex items-center gap-3">
                                 {/* Image */}
                                 <div className="w-12 h-12 bg-gray-100 rounded-lg flex-shrink-0 overflow-hidden">
@@ -341,6 +694,11 @@ export default function MyEquipmentPage() {
                                 {/* Info */}
                                 <div className="flex-1 min-w-0">
                                     <h3 className="font-medium text-gray-800 text-sm truncate">{usage.equipmentName}</h3>
+                                    {isBorrowForUsage(usage) && (
+                                        <p className="text-xs text-amber-700 truncate">
+                                            ยืมแทน: {usage.borrowerName || usage.userName || '-'}
+                                        </p>
+                                    )}
                                     <div className="flex items-center gap-2 text-xs text-gray-500">
                                         <span>{usage.quantity} {usage.unit}</span>
                                         <span>•</span>
@@ -364,7 +722,7 @@ export default function MyEquipmentPage() {
                                     </div>
                                 ) : (
                                     <button
-                                        onClick={() => handleReturn(usage)}
+                                        onClick={() => openReturnItemModal(usage)}
                                         disabled={returningId === usage.id}
                                         className="px-6 py-2 text-sm border border-green-600 font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 disabled:opacity-50 transition-colors"
                                     >
@@ -374,10 +732,183 @@ export default function MyEquipmentPage() {
                                     </button>
                                 )}
                             </div>
+                                ))}
+                            </section>
                         ))}
                     </div>
                 )}
             </div>
+            {returnItem && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden">
+                        <div className="p-4 border-b border-gray-200">
+                            <h3 className="text-lg font-bold text-gray-800">คืนอุปกรณ์</h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                                {returnItem.equipmentName} • {returnItem.quantity} {returnItem.unit || 'ชิ้น'}
+                            </p>
+                            {isBorrowForUsage(returnItem) && (
+                                <p className="text-xs text-amber-700 mt-1">
+                                    ยืมแทน: {returnItem.borrowerName || returnItem.userName || '-'}
+                                </p>
+                            )}
+                        </div>
+
+                        <div className="p-4 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    เหตุผล (ไม่บังคับ)
+                                </label>
+                                <textarea
+                                    value={returnReason}
+                                    onChange={(e) => setReturnReason(e.target.value)}
+                                    rows={3}
+                                    placeholder="ระบุเหตุผลหรือรายละเอียดการคืน..."
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
+                                />
+                            </div>
+
+                            <div>
+                                <input
+                                    ref={returnImageInputRef}
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    className="hidden"
+                                    onChange={(e) => handleReturnImageChange(e.target.files?.[0])}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => returnImageInputRef.current?.click()}
+                                    className="w-full py-2.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    ถ่ายรูป / แนบรูป
+                                </button>
+                                {returnImagePreview && (
+                                    <div className="mt-3 rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
+                                        <Image
+                                            src={returnImagePreview}
+                                            alt="return attachment preview"
+                                            width={320}
+                                            height={180}
+                                            className="w-full max-h-48 object-cover"
+                                            unoptimized
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={clearReturnImage}
+                                            className="w-full py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            ลบรูปแนบ
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="p-4 border-t border-gray-200 flex gap-3">
+                            <button
+                                type="button"
+                                onClick={closeReturnItemModal}
+                                disabled={!!returningId}
+                                className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 transition-colors disabled:opacity-50"
+                            >
+                                ยกเลิก
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleReturn(returnItem)}
+                                disabled={!!returningId}
+                                className="flex-1 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+                            >
+                                {returningId ? 'กำลังคืน...' : 'ยืนยันคืน'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {returnGroup && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden">
+                        <div className="p-4 border-b border-gray-200">
+                            <h3 className="text-lg font-bold text-gray-800">คืนทั้งหมด</h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                                {returnGroup.title} • {returnGroup.items.filter(item => item.status === 'active').length} รายการ
+                            </p>
+                        </div>
+
+                        <div className="p-4 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    เหตุผล (ไม่บังคับ)
+                                </label>
+                                <textarea
+                                    value={returnReason}
+                                    onChange={(e) => setReturnReason(e.target.value)}
+                                    rows={3}
+                                    placeholder="ระบุเหตุผลหรือรายละเอียดการคืน..."
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
+                                />
+                            </div>
+
+                            <div>
+                                <input
+                                    ref={returnImageInputRef}
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    className="hidden"
+                                    onChange={(e) => handleReturnImageChange(e.target.files?.[0])}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => returnImageInputRef.current?.click()}
+                                    className="w-full py-2.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    ถ่ายรูป / แนบรูป
+                                </button>
+                                {returnImagePreview && (
+                                    <div className="mt-3 rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
+                                        <Image
+                                            src={returnImagePreview}
+                                            alt="return attachment preview"
+                                            width={320}
+                                            height={180}
+                                            className="w-full max-h-48 object-cover"
+                                            unoptimized
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={clearReturnImage}
+                                            className="w-full py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            ลบรูปแนบ
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="p-4 border-t border-gray-200 flex gap-3">
+                            <button
+                                type="button"
+                                onClick={closeReturnGroupModal}
+                                disabled={returningAll}
+                                className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 transition-colors disabled:opacity-50"
+                            >
+                                ยกเลิก
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleReturnGroupSubmit}
+                                disabled={returningAll}
+                                className="flex-1 py-2.5 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 transition-colors disabled:opacity-50"
+                            >
+                                {returningAll ? 'กำลังคืน...' : 'ยืนยันคืนทั้งหมด'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

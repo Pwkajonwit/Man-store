@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { db } from "@/lib/firebase";
-import { collection, doc, getDoc, getDocs, limit, query, setDoc, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, query, setDoc, Timestamp, where, writeBatch } from "firebase/firestore";
 import { checkAllIndexes, IndexCheckResult } from "@/lib/indexChecker";
 
 // รายการ Index ที่จำเป็นสำหรับระบบ
@@ -58,6 +58,180 @@ const REQUIRED_INDEXES = [
         page: "users"
     },
 ];
+
+const BACKUP_COLLECTIONS = [
+    "settings",
+    "equipment",
+    "equipment-usage",
+    "stock-history",
+    "repairs",
+    "repair-reports",
+    "users",
+    "appConfig",
+    "scheduled-notification-logs",
+    "bookings",
+    "expenses",
+    "vehicles",
+    "vehicle-usage",
+];
+
+const BACKUP_CSV_HEADERS = ["collection", "id", "data"];
+
+type CategoryItem = {
+    code: string;
+    name: string;
+    phase: string;
+    sortOrder: number;
+    active: boolean;
+};
+
+type SettingsTab = "notifications" | "masterData" | "backup" | "system";
+
+const DEFAULT_CATEGORY_ITEMS: CategoryItem[] = [
+    { sortOrder: 1, code: "ST", name: "งานโครงสร้าง", phase: "โครงสร้างพื้นฐาน", active: true },
+    { sortOrder: 2, code: "RE", name: "เหล็กเสริม", phase: "โครงสร้างพื้นฐาน", active: true },
+    { sortOrder: 3, code: "FW", name: "แบบหล่อ/นั่งร้าน", phase: "โครงสร้างพื้นฐาน", active: true },
+    { sortOrder: 4, code: "RF", name: "งานหลังคา", phase: "งานสถาปัตยกรรม", active: true },
+    { sortOrder: 5, code: "AR", name: "งานสถาปัตย์", phase: "งานสถาปัตยกรรม", active: true },
+    { sortOrder: 6, code: "PL", name: "ประปา", phase: "งานระบบ (MEP)", active: true },
+    { sortOrder: 7, code: "EL", name: "ไฟฟ้า", phase: "งานระบบ (MEP)", active: true },
+    { sortOrder: 8, code: "MS", name: "เหล็ก/เชื่อม", phase: "วัสดุสิ้นเปลือง", active: true },
+    { sortOrder: 9, code: "NL", name: "ตะปู", phase: "วัสดุสิ้นเปลือง", active: true },
+    { sortOrder: 10, code: "SC", name: "สกรู/พุก", phase: "วัสดุสิ้นเปลือง", active: true },
+    { sortOrder: 11, code: "CH", name: "เคมีภัณฑ์", phase: "วัสดุสิ้นเปลือง", active: true },
+    { sortOrder: 12, code: "MC", name: "เครื่องจักร", phase: "เครื่องจักรและเครื่องมือ", active: true },
+    { sortOrder: 13, code: "TL", name: "เครื่องมือ", phase: "เครื่องจักรและเครื่องมือ", active: true },
+    { sortOrder: 14, code: "SF", name: "เซฟตี้", phase: "เครื่องจักรและเครื่องมือ", active: true },
+    { sortOrder: 15, code: "OF", name: "สำนักงานไซต์", phase: "บริหารจัดการไซต์งาน", active: true },
+];
+
+function normalizeCategoryItems(categoryItems: any, fallbackCategories: any): CategoryItem[] {
+    if (Array.isArray(categoryItems) && categoryItems.length > 0) {
+        return categoryItems
+            .map((item, index) => ({
+                code: String(item.code || "").trim().toUpperCase(),
+                name: String(item.name || "").trim(),
+                phase: String(item.phase || "").trim(),
+                sortOrder: Number(item.sortOrder) || index + 1,
+                active: item.active !== false,
+            }))
+            .filter((item) => item.code && item.name)
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    }
+
+    if (Array.isArray(fallbackCategories) && fallbackCategories.length > 0) {
+        return fallbackCategories.map((name, index) => ({
+            code: `C${String(index + 1).padStart(2, "0")}`,
+            name: String(name),
+            phase: "ทั่วไป",
+            sortOrder: index + 1,
+            active: true,
+        }));
+    }
+
+    return DEFAULT_CATEGORY_ITEMS;
+}
+
+function csvEscape(value: unknown): string {
+    const text = String(value ?? "");
+    if (/[",\r\n]/.test(text)) {
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+}
+
+function parseBackupCsv(text: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let field = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const next = text[i + 1];
+
+        if (inQuotes) {
+            if (char === '"' && next === '"') {
+                field += '"';
+                i++;
+            } else if (char === '"') {
+                inQuotes = false;
+            } else {
+                field += char;
+            }
+            continue;
+        }
+
+        if (char === '"') {
+            inQuotes = true;
+        } else if (char === ",") {
+            row.push(field);
+            field = "";
+        } else if (char === "\n") {
+            row.push(field);
+            rows.push(row);
+            row = [];
+            field = "";
+        } else if (char !== "\r") {
+            field += char;
+        }
+    }
+
+    if (field || row.length) {
+        row.push(field);
+        rows.push(row);
+    }
+
+    return rows.filter((items) => items.some((item) => item.trim() !== ""));
+}
+
+function serializeBackupValue(value: any): any {
+    if (Array.isArray(value)) {
+        return value.map(serializeBackupValue);
+    }
+
+    if (value && typeof value === "object") {
+        if (
+            typeof value.seconds === "number" &&
+            typeof value.nanoseconds === "number" &&
+            typeof value.toDate === "function"
+        ) {
+            return { _seconds: value.seconds, _nanoseconds: value.nanoseconds };
+        }
+
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, serializeBackupValue(item)])
+        );
+    }
+
+    return value;
+}
+
+function restoreBackupValue(value: any): any {
+    if (Array.isArray(value)) {
+        return value.map(restoreBackupValue);
+    }
+
+    if (value && typeof value === "object") {
+        const seconds = value._seconds ?? value.seconds;
+        const nanoseconds = value._nanoseconds ?? value.nanoseconds;
+        const keys = Object.keys(value);
+
+        if (
+            typeof seconds === "number" &&
+            typeof nanoseconds === "number" &&
+            keys.every((key) => ["_seconds", "_nanoseconds", "seconds", "nanoseconds"].includes(key))
+        ) {
+            return new Timestamp(seconds, nanoseconds);
+        }
+
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, restoreBackupValue(item)])
+        );
+    }
+
+    return value;
+}
 
 // สร้าง firestore.indexes.json content
 const generateIndexesJSON = () => {
@@ -192,7 +366,10 @@ function serializeSummaryUsage(usage: any) {
 export default function SettingsPage() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [exportingBackup, setExportingBackup] = useState(false);
+    const [importingBackup, setImportingBackup] = useState(false);
     const [message, setMessage] = useState("");
+    const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTab>("notifications");
     const [testingNotification, setTestingNotification] = useState(false);
     const [testingSummary, setTestingSummary] = useState<"borrow" | "return" | null>(null);
     // const [showIndexes, setShowIndexes] = useState(false); // Unused
@@ -204,10 +381,21 @@ export default function SettingsPage() {
     const [showIndexModal, setShowIndexModal] = useState(false);
 
     const [categories, setCategories] = useState<string[]>([]);
+    const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
     const [locations, setLocations] = useState<string[]>([]);
-    const [newCategory, setNewCategory] = useState("");
+    const [newCategoryCode, setNewCategoryCode] = useState("");
+    const [newCategoryName, setNewCategoryName] = useState("");
+    const [newCategoryPhase, setNewCategoryPhase] = useState("");
     const [newLocation, setNewLocation] = useState("");
     const [adminUsers, setAdminUsers] = useState<Array<{ id: string; name: string; lineId: string }>>([]);
+    const backupFileInputRef = useRef<HTMLInputElement>(null);
+
+    const settingsTabs: Array<{ id: SettingsTab; label: string; description: string }> = [
+        { id: "notifications", label: "แจ้งเตือน", description: "LINE และข้อความผู้ใช้" },
+        { id: "masterData", label: "ข้อมูลหลัก", description: "หมวดหมู่และตำแหน่ง" },
+        { id: "backup", label: "Backup", description: "Import / Export CSV" },
+        { id: "system", label: "ระบบ", description: "Indexes และเครื่องมือ" },
+    ];
 
     // LINE settings (Group ID only, Token from .env)
     const [lineConfig, setLineConfig] = useState({
@@ -230,10 +418,13 @@ export default function SettingsPage() {
                 const equipDocSnap = await getDoc(equipDocRef);
                 if (equipDocSnap.exists()) {
                     const data = equipDocSnap.data();
-                    setCategories(data.categories || []);
+                    const normalizedCategories = normalizeCategoryItems(data.categoryItems, data.categories);
+                    setCategoryItems(normalizedCategories);
+                    setCategories(normalizedCategories.filter((item) => item.active).map((item) => item.name));
                     setLocations(data.locations || []);
                 } else {
-                    setCategories(['เครื่องมือไฟฟ้า', 'เครื่องมือช่าง', 'อุปกรณ์วัด', 'อุปกรณ์ความปลอดภัย', 'วัสดุสิ้นเปลือง', 'อะไหล่', 'ทั่วไป']);
+                    setCategoryItems(DEFAULT_CATEGORY_ITEMS);
+                    setCategories(DEFAULT_CATEGORY_ITEMS.map((item) => item.name));
                     setLocations(['ชั้น A-1', 'ชั้น A-2', 'ชั้น B-1', 'ห้องเก็บของ', 'โกดัง']);
                 }
 
@@ -281,7 +472,35 @@ export default function SettingsPage() {
         setMessage("");
         try {
             const equipDocRef = doc(db, "settings", "equipment");
-            await setDoc(equipDocRef, { categories, locations, updatedAt: new Date() }, { merge: true });
+            const seenCodes = new Set<string>();
+            const sortedCategoryItems = categoryItems
+                .map((item, index) => ({
+                    ...item,
+                    code: item.code.trim().toUpperCase(),
+                    name: item.name.trim(),
+                    phase: item.phase.trim() || "ทั่วไป",
+                    sortOrder: Number(item.sortOrder) || index + 1
+                }))
+                .filter((item) => item.code && item.name)
+                .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+
+            for (const item of sortedCategoryItems) {
+                if (seenCodes.has(item.code)) {
+                    setMessage(`รหัสหมวดหมู่ซ้ำ: ${item.code}`);
+                    setSaving(false);
+                    return;
+                }
+                seenCodes.add(item.code);
+            }
+
+            const activeCategoryNames = sortedCategoryItems.filter((item) => item.active).map((item) => item.name);
+            await setDoc(equipDocRef, {
+                categoryItems: sortedCategoryItems,
+                categories: activeCategoryNames,
+                locations,
+                updatedAt: new Date()
+            }, { merge: true });
+            setCategories(activeCategoryNames);
 
             const notifyDocRef = doc(db, "settings", "notifications");
             await setDoc(notifyDocRef, { line: lineConfig, updatedAt: new Date() }, { merge: true });
@@ -420,13 +639,33 @@ export default function SettingsPage() {
     };
 
     const addCategory = () => {
-        if (newCategory.trim() && !categories.includes(newCategory.trim())) {
-            setCategories([...categories, newCategory.trim()]);
-            setNewCategory("");
+        const code = newCategoryCode.trim().toUpperCase();
+        const name = newCategoryName.trim();
+        const phase = newCategoryPhase.trim() || "ทั่วไป";
+
+        if (code && name && !categoryItems.some((item) => item.code === code)) {
+            const nextOrder = categoryItems.length > 0
+                ? Math.max(...categoryItems.map((item) => Number(item.sortOrder) || 0)) + 1
+                : 1;
+            setCategoryItems([...categoryItems, { code, name, phase, sortOrder: nextOrder, active: true }]);
+            setCategories([...categories, name]);
+            setNewCategoryCode("");
+            setNewCategoryName("");
+            setNewCategoryPhase("");
         }
     };
 
-    const removeCategory = (cat: string) => setCategories(categories.filter(c => c !== cat));
+    const updateCategoryItem = (index: number, patch: Partial<CategoryItem>) => {
+        setCategoryItems((items) => items.map((item, itemIndex) => (
+            itemIndex === index ? { ...item, ...patch } : item
+        )));
+    };
+
+    const removeCategory = (index: number) => {
+        const nextItems = categoryItems.filter((_, itemIndex) => itemIndex !== index);
+        setCategoryItems(nextItems);
+        setCategories(nextItems.filter((item) => item.active).map((item) => item.name));
+    };
 
     const addLocation = () => {
         if (newLocation.trim() && !locations.includes(newLocation.trim())) {
@@ -436,6 +675,114 @@ export default function SettingsPage() {
     };
 
     const removeLocation = (loc: string) => setLocations(locations.filter(l => l !== loc));
+
+    const exportBackupCsv = async () => {
+        if (!db) {
+            setMessage("ไม่สามารถเชื่อมต่อ Firebase ได้");
+            return;
+        }
+
+        setExportingBackup(true);
+        setMessage("");
+
+        try {
+            const rows = [BACKUP_CSV_HEADERS.map(csvEscape).join(",")];
+
+            for (const collectionName of BACKUP_COLLECTIONS) {
+                const snapshot = await getDocs(collection(db as any, collectionName));
+                snapshot.docs.forEach((docSnap) => {
+                    rows.push([
+                        csvEscape(collectionName),
+                        csvEscape(docSnap.id),
+                        csvEscape(JSON.stringify(serializeBackupValue(docSnap.data()))),
+                    ].join(","));
+                });
+            }
+
+            const blob = new Blob([`\uFEFF${rows.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            const dateKey = new Date().toISOString().slice(0, 10);
+            a.href = url;
+            a.download = `store-backup-${dateKey}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            setMessage("Export backup CSV สำเร็จ");
+        } catch (error: any) {
+            console.error("Error exporting backup:", error);
+            setMessage(error?.message || "Export backup CSV ไม่สำเร็จ");
+        } finally {
+            setExportingBackup(false);
+        }
+    };
+
+    const importBackupCsv = async (file?: File) => {
+        if (!db) {
+            setMessage("ไม่สามารถเชื่อมต่อ Firebase ได้");
+            return;
+        }
+
+        if (!file) return;
+
+        const confirmed = window.confirm(
+            "Import backup CSV จะเขียนข้อมูลกลับเข้า Firestore แบบ merge ตาม collection/id เดิม ต้องการดำเนินการต่อหรือไม่?"
+        );
+
+        if (!confirmed) {
+            if (backupFileInputRef.current) backupFileInputRef.current.value = "";
+            return;
+        }
+
+        setImportingBackup(true);
+        setMessage("");
+
+        try {
+            const text = await file.text();
+            const rows = parseBackupCsv(text.replace(/^\uFEFF/, ""));
+            const [headers, ...items] = rows;
+
+            if (!headers || headers.join(",") !== BACKUP_CSV_HEADERS.join(",")) {
+                throw new Error(`Invalid CSV headers. Expected: ${BACKUP_CSV_HEADERS.join(",")}`);
+            }
+
+            let batch = writeBatch(db);
+            let pending = 0;
+            let imported = 0;
+
+            for (const row of items) {
+                const [collectionName, id, dataJson] = row;
+
+                if (!BACKUP_COLLECTIONS.includes(collectionName) || !id || !dataJson) {
+                    continue;
+                }
+
+                const data = restoreBackupValue(JSON.parse(dataJson));
+                batch.set(doc(db as any, collectionName, id), data, { merge: true });
+                pending++;
+                imported++;
+
+                if (pending >= 450) {
+                    await batch.commit();
+                    batch = writeBatch(db);
+                    pending = 0;
+                }
+            }
+
+            if (pending > 0) {
+                await batch.commit();
+            }
+
+            setMessage(`Import backup CSV สำเร็จ (${imported} รายการ)`);
+        } catch (error: any) {
+            console.error("Error importing backup:", error);
+            setMessage(error?.message || "Import backup CSV ไม่สำเร็จ");
+        } finally {
+            setImportingBackup(false);
+            if (backupFileInputRef.current) backupFileInputRef.current.value = "";
+        }
+    };
 
     // Download indexes JSON file
     const downloadIndexesFile = () => {
@@ -489,10 +836,31 @@ export default function SettingsPage() {
                 </div>
             </div>
 
-            {/* 2 Column Layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="mb-6 overflow-x-auto">
+                <div className="inline-flex min-w-full rounded-xl bg-white p-1 shadow-sm border border-gray-100">
+                    {settingsTabs.map((tab) => (
+                        <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setActiveSettingsTab(tab.id)}
+                            className={`flex-1 min-w-[140px] px-4 py-3 rounded-lg text-left transition-colors ${activeSettingsTab === tab.id
+                                ? "bg-teal-600 text-white shadow-sm"
+                                : "text-gray-600 hover:bg-gray-50"
+                                }`}
+                        >
+                            <span className="block text-sm font-semibold">{tab.label}</span>
+                            <span className={`block text-xs mt-0.5 ${activeSettingsTab === tab.id ? "text-teal-50" : "text-gray-400"}`}>
+                                {tab.description}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Tab Content */}
+            <div className="grid grid-cols-1 gap-6">
                 {/* Left Column */}
-                <div className="space-y-6">
+                <div className={activeSettingsTab === "notifications" ? "space-y-6" : "hidden"}>
                     {/* LINE Messaging API */}
                     <div className="bg-white rounded-xl shadow-sm p-5 border-l-4 border-green-500">
                         <div className="flex items-center gap-3 mb-4">
@@ -723,39 +1091,172 @@ export default function SettingsPage() {
                 </div>
 
                 {/* Right Column */}
-                <div className="space-y-6">
+                <div className={activeSettingsTab === "notifications" ? "hidden" : "flex flex-col gap-6"}>
+                    {/* Backup */}
+                    <div className={activeSettingsTab === "backup" ? "bg-white rounded-xl shadow-sm p-5 border-l-4 border-sky-500" : "hidden"}>
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-10 h-10 bg-sky-100 rounded-lg flex items-center justify-center">
+                                <svg className="w-6 h-6 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M8 12l4 4m0 0l4-4m-4 4V4" />
+                                </svg>
+                            </div>
+                            <div className="flex-1">
+                                <h2 className="font-semibold text-gray-800">Backup CSV</h2>
+                                <p className="text-xs text-gray-500">Export และ Import ข้อมูลหลักของระบบด้วยไฟล์ CSV</p>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <button
+                                type="button"
+                                onClick={exportBackupCsv}
+                                disabled={exportingBackup || importingBackup}
+                                className="py-3 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
+                                </svg>
+                                {exportingBackup ? "กำลัง Export..." : "Export CSV"}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => backupFileInputRef.current?.click()}
+                                disabled={exportingBackup || importingBackup}
+                                className="py-3 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 20V8m0 0l-4 4m4-4l4 4M4 4h16" />
+                                </svg>
+                                {importingBackup ? "กำลัง Import..." : "Import CSV"}
+                            </button>
+                        </div>
+
+                        <input
+                            ref={backupFileInputRef}
+                            type="file"
+                            accept=".csv,text/csv"
+                            className="hidden"
+                            onChange={(event) => importBackupCsv(event.target.files?.[0])}
+                        />
+                        <p className="mt-3 text-xs text-gray-500">
+                            ไฟล์ backup ใช้รูปแบบ collection,id,data และตอน import จะ merge ทับเอกสารเดิมตาม id
+                        </p>
+                    </div>
+
                     {/* Categories */}
-                    <div className="bg-white rounded-xl shadow-sm p-5">
-                        <h2 className="font-semibold text-gray-800 mb-3">📦 หมวดหมู่อุปกรณ์</h2>
-                        <div className="flex gap-2 mb-3">
+                    <div className={activeSettingsTab === "masterData" ? "bg-white rounded-xl shadow-sm p-5" : "hidden"}>
+                        <div className="flex items-start justify-between gap-3 mb-4">
+                            <div>
+                                <h2 className="font-semibold text-gray-800">หมวดหมู่อุปกรณ์</h2>
+                                <p className="text-xs text-gray-500 mt-1">จัดการรหัสหมวดหมู่ ชื่อหมวดหมู่ และกลุ่มงาน</p>
+                            </div>
+                            <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                                {categoryItems.length} ย่อย / {[...new Set(categoryItems.map((item) => item.phase).filter(Boolean))].length} หลัก
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-4">
                             <input
                                 type="text"
-                                value={newCategory}
-                                onChange={(e) => setNewCategory(e.target.value)}
+                                value={newCategoryCode}
+                                onChange={(e) => setNewCategoryCode(e.target.value.toUpperCase())}
                                 onKeyDown={(e) => e.key === 'Enter' && addCategory()}
-                                placeholder="เพิ่มหมวดหมู่ใหม่..."
-                                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                placeholder="รหัส เช่น ST"
+                                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            />
+                            <input
+                                type="text"
+                                value={newCategoryName}
+                                onChange={(e) => setNewCategoryName(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && addCategory()}
+                                placeholder="ชื่อหมวดหมู่"
+                                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                            />
+                            <input
+                                type="text"
+                                value={newCategoryPhase}
+                                onChange={(e) => setNewCategoryPhase(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && addCategory()}
+                                placeholder="กลุ่มงาน"
+                                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                             />
                             <button onClick={addCategory} className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-medium hover:bg-teal-700">
                                 เพิ่ม
                             </button>
                         </div>
-                        <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                            {categories.map((cat, i) => (
-                                <span key={i} className="inline-flex items-center gap-1 px-3 py-1 bg-gray-100 rounded-full text-sm">
-                                    {cat}
-                                    <button onClick={() => removeCategory(cat)} className="text-gray-400 hover:text-red-500">
-                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                        </svg>
-                                    </button>
-                                </span>
-                            ))}
+
+                        <div className="overflow-x-auto border border-gray-100 rounded-lg">
+                            <table className="min-w-full text-sm">
+                                <thead className="bg-gray-50 text-gray-500">
+                                    <tr>
+                                        <th className="px-3 py-2 text-left font-medium w-16">ลำดับ</th>
+                                        <th className="px-3 py-2 text-left font-medium w-24">รหัส</th>
+                                        <th className="px-3 py-2 text-left font-medium">หมวดหมู่</th>
+                                        <th className="px-3 py-2 text-left font-medium">กลุ่มงาน</th>
+                                        <th className="px-3 py-2 text-left font-medium w-20">ใช้งาน</th>
+                                        <th className="px-3 py-2 text-right font-medium w-16"></th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {categoryItems.map((item, index) => (
+                                        <tr key={`${item.code}-${index}`} className={item.active ? "bg-white" : "bg-gray-50 text-gray-400"}>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    type="number"
+                                                    value={item.sortOrder}
+                                                    onChange={(e) => updateCategoryItem(index, { sortOrder: Number(e.target.value) || index + 1 })}
+                                                    className="w-14 px-2 py-1 border border-gray-200 rounded text-sm"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    type="text"
+                                                    value={item.code}
+                                                    onChange={(e) => updateCategoryItem(index, { code: e.target.value.toUpperCase() })}
+                                                    className="w-20 px-2 py-1 border border-gray-200 rounded text-sm font-semibold text-gray-700 uppercase"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    type="text"
+                                                    value={item.name}
+                                                    onChange={(e) => updateCategoryItem(index, { name: e.target.value })}
+                                                    className="w-full px-2 py-1 border border-gray-200 rounded text-sm"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    type="text"
+                                                    value={item.phase}
+                                                    onChange={(e) => updateCategoryItem(index, { phase: e.target.value })}
+                                                    className="w-full px-2 py-1 border border-gray-200 rounded text-sm"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={item.active}
+                                                    onChange={(e) => updateCategoryItem(index, { active: e.target.checked })}
+                                                    className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2 text-right">
+                                                <button onClick={() => removeCategory(index)} className="text-gray-400 hover:text-red-500">
+                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                                    </svg>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
                     {/* Locations */}
-                    <div className="bg-white rounded-xl shadow-sm p-5">
+                    <div className={activeSettingsTab === "masterData" ? "bg-white rounded-xl shadow-sm p-5" : "hidden"}>
                         <h2 className="font-semibold text-gray-800 mb-3">📍 ตำแหน่งจัดเก็บ</h2>
                         <div className="flex gap-2 mb-3">
                             <input
@@ -784,7 +1285,7 @@ export default function SettingsPage() {
                         </div>
                     </div>
                     {/* Firestore Indexes */}
-                    <div className="bg-white rounded-xl shadow-sm p-5 border-l-4 border-orange-500">
+                    <div className={activeSettingsTab === "system" ? "bg-white rounded-xl shadow-sm p-5 border-l-4 border-orange-500" : "hidden"}>
                         <div className="flex items-center gap-3 mb-4">
                             <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
                                 <svg className="w-6 h-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">

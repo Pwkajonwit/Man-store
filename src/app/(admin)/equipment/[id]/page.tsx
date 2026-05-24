@@ -26,6 +26,41 @@ const Icons = {
     ),
 };
 
+type CategoryItem = {
+    code: string;
+    name: string;
+    phase: string;
+    sortOrder: number;
+    active: boolean;
+};
+
+function normalizeCategoryItems(categoryItems: any, fallbackCategories: any): CategoryItem[] {
+    if (Array.isArray(categoryItems) && categoryItems.length > 0) {
+        return categoryItems
+            .map((item, index) => ({
+                code: String(item.code || "").trim().toUpperCase(),
+                name: String(item.name || "").trim(),
+                phase: String(item.phase || "").trim(),
+                sortOrder: Number(item.sortOrder) || index + 1,
+                active: item.active !== false,
+            }))
+            .filter((item) => item.code && item.name)
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    }
+
+    if (Array.isArray(fallbackCategories) && fallbackCategories.length > 0) {
+        return fallbackCategories.map((name, index) => ({
+            code: `C${String(index + 1).padStart(2, "0")}`,
+            name: String(name),
+            phase: "ทั่วไป",
+            sortOrder: index + 1,
+            active: true,
+        }));
+    }
+
+    return [{ code: "GEN", name: "ทั่วไป", phase: "ทั่วไป", sortOrder: 1, active: true }];
+}
+
 export default function EditEquipmentPage() {
     const router = useRouter();
     const params = useParams();
@@ -41,6 +76,9 @@ export default function EditEquipmentPage() {
         name: "",
         code: "",
         category: "ทั่วไป",
+        categoryCode: "",
+        categoryName: "ทั่วไป",
+        categoryPhase: "ทั่วไป",
         type: "borrowable",
         status: "available",
         quantity: 1,
@@ -51,7 +89,8 @@ export default function EditEquipmentPage() {
         description: "",
         location: "",
     });
-    const [categories, setCategories] = useState<string[]>(['ทั่วไป']);
+    const [categories, setCategories] = useState<CategoryItem[]>([{ code: "GEN", name: "ทั่วไป", phase: "ทั่วไป", sortOrder: 1, active: true }]);
+    const [selectedPhase, setSelectedPhase] = useState("");
     const [locations, setLocations] = useState<string[]>([]);
 
     // Load settings
@@ -63,7 +102,8 @@ export default function EditEquipmentPage() {
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    if (data.categories?.length) setCategories(data.categories);
+                    const normalizedCategories = normalizeCategoryItems(data.categoryItems, data.categories).filter((item) => item.active);
+                    if (normalizedCategories.length) setCategories(normalizedCategories);
                     if (data.locations?.length) setLocations(data.locations);
                 }
             } catch (error) {
@@ -85,6 +125,9 @@ export default function EditEquipmentPage() {
                     name: data.name || "",
                     code: data.code || "",
                     category: data.category || "ทั่วไป",
+                    categoryCode: data.categoryCode || "",
+                    categoryName: data.categoryName || data.category || "ทั่วไป",
+                    categoryPhase: data.categoryPhase || "",
                     type: data.type || "borrowable",
                     status: data.status === "active" ? "available" : (data.status || "available"),
                     quantity: data.quantity || 1,
@@ -95,6 +138,7 @@ export default function EditEquipmentPage() {
                     description: data.description || "",
                     location: data.location || "",
                 });
+                setSelectedPhase(data.categoryPhase || "");
                 setImagePreview(data.imageUrl || "");
             }
             setLoading(false);
@@ -103,8 +147,42 @@ export default function EditEquipmentPage() {
         return () => unsubscribe();
     }, [equipmentId]);
 
+    useEffect(() => {
+        if (selectedPhase || !categories.length) return;
+        const currentCategory = categories.find((item) => item.code === formData.categoryCode)
+            || categories.find((item) => item.name === formData.categoryName)
+            || categories.find((item) => item.name === formData.category);
+        if (currentCategory?.phase) {
+            setSelectedPhase(currentCategory.phase);
+        }
+    }, [categories, formData.category, formData.categoryCode, formData.categoryName, selectedPhase]);
+
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
         const { name, value } = e.target;
+        if (name === "categoryPhaseSelector") {
+            setSelectedPhase(value);
+            setFormData((prev: any) => ({
+                ...prev,
+                categoryCode: "",
+                categoryName: "",
+                categoryPhase: value,
+                category: "",
+            }));
+            return;
+        }
+
+        if (name === "categoryCode") {
+            const selected = categories.find((item) => item.code === value);
+            setFormData((prev: any) => ({
+                ...prev,
+                categoryCode: selected?.code || "",
+                categoryName: selected?.name || "",
+                categoryPhase: selected?.phase || "",
+                category: selected?.name || "",
+            }));
+            return;
+        }
+
         setFormData((prev: any) => ({
             ...prev,
             [name]: value
@@ -162,11 +240,16 @@ export default function EditEquipmentPage() {
             const newQuantity = Number(formData.quantity);
             const diff = newQuantity - (currentData.quantity || 0);
             const newAvailable = Math.max(0, (currentData.availableQuantity || 0) + diff);
+            const selectedCategory = categories.find((cat) => cat.code === formData.categoryCode)
+                || categories.find((cat) => cat.name === formData.category);
 
             await updateDoc(docRef, {
                 name: formData.name,
                 code: formData.code,
-                category: formData.category,
+                category: selectedCategory?.name || formData.category,
+                categoryCode: selectedCategory?.code || formData.categoryCode || '',
+                categoryName: selectedCategory?.name || formData.categoryName || formData.category,
+                categoryPhase: selectedCategory?.phase || formData.categoryPhase || '',
                 type: formData.type,
                 status: formData.status,
                 quantity: newQuantity,
@@ -190,6 +273,27 @@ export default function EditEquipmentPage() {
         }
     };
 
+    const selectedCategory = categories.find((cat) => cat.code === formData.categoryCode)
+        || categories.find((cat) => cat.name === formData.category)
+        || undefined;
+    const categoryPhases = Array.from(new Set(categories.map((cat) => cat.phase).filter(Boolean)));
+    const filteredCategories = selectedPhase
+        ? categories.filter((cat) => cat.phase === selectedPhase)
+        : [];
+    const statusLabelMap: Record<string, string> = {
+        available: "พร้อมใช้งาน",
+        damaged: "ชำรุด",
+        lost: "หาย",
+        retired: "ยกเลิกใช้งาน",
+    };
+    const statusBadgeClassMap: Record<string, string> = {
+        available: "bg-emerald-50 text-emerald-700 border-emerald-200",
+        damaged: "bg-amber-50 text-amber-700 border-amber-200",
+        lost: "bg-red-50 text-red-700 border-red-200",
+        retired: "bg-gray-100 text-gray-600 border-gray-200",
+    };
+    const isBusy = isSubmitting || isUploading;
+
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-[400px]">
@@ -199,284 +303,314 @@ export default function EditEquipmentPage() {
     }
 
     return (
-        <div className="max-w-3xl mx-auto">
-            {/* Header */}
-            <div className="flex items-center gap-4 mb-6">
-                <button
-                    onClick={() => router.back()}
-                    className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 transition-colors"
-                >
-                    <Icons.ArrowLeft className="w-5 h-5 text-gray-600" />
-                </button>
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">แก้ไขอุปกรณ์</h1>
-                    <p className="text-gray-500 text-sm">แก้ไขข้อมูลอุปกรณ์: {formData.name}</p>
+        <div className="max-w-6xl mx-auto pb-24">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-5">
+                <div className="flex items-start gap-3">
+                    <button
+                        type="button"
+                        onClick={() => router.back()}
+                        className="mt-1 p-2 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                        aria-label="กลับ"
+                    >
+                        <Icons.ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <h1 className="text-xl sm:text-2xl font-bold text-gray-900">แก้ไขอุปกรณ์</h1>
+                            <span className={`px-2.5 py-1 rounded-full border text-xs font-semibold ${statusBadgeClassMap[formData.status] || statusBadgeClassMap.available}`}>
+                                {statusLabelMap[formData.status] || formData.status}
+                            </span>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-1 line-clamp-1">
+                            {formData.code ? `${formData.code} - ` : ""}{formData.name || "ยังไม่ได้ระบุชื่อ"}
+                        </p>
+                    </div>
                 </div>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-6">
-                {/* Image Upload */}
-                <div className="flex flex-col items-center gap-3">
-                    <div className="relative group">
-                        <label className={`cursor-pointer block ${imagePreview || formData.imageUrl ? '' : 'w-32 h-32'}`}>
-                            <div className="h-32 w-32 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50 overflow-hidden hover:border-teal-500 transition-colors">
-                                {imagePreview || formData.imageUrl ? (
-                                    <Image src={imagePreview || formData.imageUrl} alt="Preview" width={128} height={128} className="object-cover w-full h-full" unoptimized />
-                                ) : (
-                                    <div className="text-center">
-                                        <Icons.Photo className="w-10 h-10 text-gray-300 mx-auto" />
-                                        <span className="text-xs text-gray-400 mt-1">คลิกเพื่อเปลี่ยนรูป</span>
-                                    </div>
-                                )}
-                            </div>
-                            <input
-                                type="file"
-                                accept="image/*"
-                                onChange={handleImageUpload}
-                                className="hidden"
-                            />
-                        </label>
-                        {(imagePreview || formData.imageUrl) && (
-                            <button
-                                type="button"
-                                onClick={handleRemoveImage}
-                                className="absolute -top-2 -right-2 p-1.5 bg-red-500 text-white rounded-full shadow-md hover:bg-red-600 transition-colors z-10"
-                                title="ลบรูปภาพ"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        )}
-                    </div>
-                    {isUploading && (
-                        <div className="flex items-center gap-2 text-sm text-teal-600">
-                            <div className="animate-spin h-4 w-4 border-2 border-teal-600 border-t-transparent rounded-full"></div>
-                            กำลังอัพโหลด...
-                        </div>
-                    )}
-                </div>
-
-                {/* Name & Code */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                            ชื่ออุปกรณ์ <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                            type="text"
-                            name="name"
-                            value={formData.name}
-                            onChange={handleChange}
-                            required
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">รหัสอุปกรณ์</label>
-                        <input
-                            type="text"
-                            name="code"
-                            value={formData.code}
-                            onChange={handleChange}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    </div>
-                </div>
-
-                {/* Type */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">ประเภท</label>
-                    <div className="grid grid-cols-2 gap-4">
-                        <button
-                            type="button"
-                            onClick={() => setFormData((prev: any) => ({ ...prev, type: 'borrowable' }))}
-                            className={`p-4 rounded-xl border-2 transition-all ${formData.type === 'borrowable'
-                                ? 'border-blue-500 bg-blue-50'
-                                : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                        >
-                            <div className="flex flex-col items-center gap-2">
-                                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${formData.type === 'borrowable' ? 'bg-blue-100' : 'bg-gray-100'
-                                    }`}>
-                                    <svg className={`w-6 h-6 ${formData.type === 'borrowable' ? 'text-blue-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                    </svg>
-                                </div>
-                                <div className="text-center">
-                                    <div className={`font-medium ${formData.type === 'borrowable' ? 'text-blue-700' : 'text-gray-700'}`}>ยืม-คืน</div>
-                                    <div className="text-xs text-gray-500">อุปกรณ์ที่ต้องส่งคืน</div>
-                                </div>
-                            </div>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => setFormData((prev: any) => ({ ...prev, type: 'consumable' }))}
-                            className={`p-4 rounded-xl border-2 transition-all ${formData.type === 'consumable'
-                                ? 'border-purple-500 bg-purple-50'
-                                : 'border-gray-200 hover:border-gray-300'
-                                }`}
-                        >
-                            <div className="flex flex-col items-center gap-2">
-                                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${formData.type === 'consumable' ? 'bg-purple-100' : 'bg-gray-100'
-                                    }`}>
-                                    <svg className={`w-6 h-6 ${formData.type === 'consumable' ? 'text-purple-600' : 'text-gray-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                    </svg>
-                                </div>
-                                <div className="text-center">
-                                    <div className={`font-medium ${formData.type === 'consumable' ? 'text-purple-700' : 'text-gray-700'}`}>เบิก</div>
-                                    <div className="text-xs text-gray-500">วัสดุสิ้นเปลือง</div>
-                                </div>
-                            </div>
-                        </button>
-                    </div>
-                </div>
-
-                {/* Category */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">หมวดหมู่</label>
-                    <select
-                        name="category"
-                        value={formData.category}
-                        onChange={handleChange}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                    >
-                        {categories.map(cat => (
-                            <option key={cat} value={cat}>{cat}</option>
-                        ))}
-                    </select>
-                </div>
-
-                {/* Status */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">สถานะอุปกรณ์</label>
-                    <select
-                        name="status"
-                        value={formData.status}
-                        onChange={handleChange}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                    >
-                        <option value="available">พร้อมใช้งาน</option>
-                        <option value="damaged">ชำรุด</option>
-                        <option value="lost">หาย</option>
-                        <option value="retired">ยกเลิกใช้งาน</option>
-                    </select>
-                </div>
-
-                {/* Quantity Info */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                            <span className="text-gray-500">จำนวนทั้งหมด:</span>
-                            <span className="ml-2 font-medium">{formData.quantity} {formData.unit}</span>
-                        </div>
-                        <div>
-                            <span className="text-gray-500">พร้อมใช้งาน:</span>
-                            <span className="ml-2 font-medium text-green-600">{formData.availableQuantity} {formData.unit}</span>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Quantity, Unit, Min Stock */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">จำนวนทั้งหมด</label>
-                        <input
-                            type="number"
-                            name="quantity"
-                            value={formData.quantity}
-                            onChange={handleChange}
-                            min="0"
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">หน่วย</label>
-                        <input
-                            type="text"
-                            name="unit"
-                            value={formData.unit}
-                            onChange={handleChange}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">แจ้งเตือนเมื่อเหลือ</label>
-                        <input
-                            type="number"
-                            name="minStock"
-                            value={formData.minStock}
-                            onChange={handleChange}
-                            min="0"
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    </div>
-                </div>
-
-                {/* Location */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">ตำแหน่งจัดเก็บ</label>
-                    {locations.length > 0 ? (
-                        <select
-                            name="location"
-                            value={formData.location}
-                            onChange={handleChange}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        >
-                            <option value="">เลือกตำแหน่ง...</option>
-                            {locations.map(loc => (
-                                <option key={loc} value={loc}>{loc}</option>
-                            ))}
-                        </select>
-                    ) : (
-                        <input
-                            type="text"
-                            name="location"
-                            value={formData.location}
-                            onChange={handleChange}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
-                        />
-                    )}
-                </div>
-
-                {/* Description */}
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">รายละเอียด</label>
-                    <textarea
-                        name="description"
-                        value={formData.description}
-                        onChange={handleChange}
-                        rows={3}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
-                    />
-                </div>
-
-                {/* Message */}
+            <form onSubmit={handleSubmit} className="space-y-4">
                 {message && (
-                    <div className={`p-3 rounded-lg text-sm text-center ${message.includes('สำเร็จ') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                    <div className={`rounded-lg px-4 py-3 text-sm font-medium ${message.includes('สำเร็จ') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
                         }`}>
                         {message}
                     </div>
                 )}
 
-                {/* Submit Button */}
-                <div className="flex gap-3">
-                    <button
-                        type="button"
-                        onClick={() => router.back()}
-                        className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-all"
-                    >
-                        ยกเลิก
-                    </button>
-                    <button
-                        type="submit"
-                        disabled={isSubmitting}
-                        className="flex-1 py-3 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-all disabled:bg-gray-400"
-                    >
-                        {isSubmitting ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
-                    </button>
+                <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
+                    <aside className="space-y-4">
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                            <div className="flex items-center justify-between mb-3">
+                                <h2 className="text-sm font-semibold text-gray-900">รูปอุปกรณ์</h2>
+                                {(imagePreview || formData.imageUrl) && (
+                                    <button
+                                        type="button"
+                                        onClick={handleRemoveImage}
+                                        className="text-xs font-semibold text-red-600 hover:text-red-700"
+                                    >
+                                        ลบรูป
+                                    </button>
+                                )}
+                            </div>
+                            <label className="block cursor-pointer">
+                                <div className="aspect-square rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 overflow-hidden flex items-center justify-center hover:border-teal-500 transition-colors">
+                                    {imagePreview || formData.imageUrl ? (
+                                        <Image
+                                            src={imagePreview || formData.imageUrl}
+                                            alt="Preview"
+                                            width={320}
+                                            height={320}
+                                            className="object-cover w-full h-full"
+                                            unoptimized
+                                        />
+                                    ) : (
+                                        <div className="text-center px-6">
+                                            <Icons.Photo className="w-10 h-10 text-gray-300 mx-auto" />
+                                            <span className="block text-xs text-gray-500 mt-2">คลิกเพื่อเพิ่มรูป</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                            </label>
+                            {isUploading && (
+                                <div className="mt-3 flex items-center gap-2 text-sm text-teal-600">
+                                    <div className="animate-spin h-4 w-4 border-2 border-teal-600 border-t-transparent rounded-full"></div>
+                                    กำลังอัพโหลด...
+                                </div>
+                            )}
+                        </section>
+
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                            <h2 className="text-sm font-semibold text-gray-900 mb-3">สรุปสต็อก</h2>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="rounded-lg bg-gray-50 p-3">
+                                    <p className="text-xs text-gray-500">ทั้งหมด</p>
+                                    <p className="mt-1 text-lg font-bold text-gray-900">{formData.quantity}</p>
+                                    <p className="text-xs text-gray-500">{formData.unit}</p>
+                                </div>
+                                <div className="rounded-lg bg-emerald-50 p-3">
+                                    <p className="text-xs text-emerald-700">พร้อมใช้</p>
+                                    <p className="mt-1 text-lg font-bold text-emerald-700">{formData.availableQuantity}</p>
+                                    <p className="text-xs text-emerald-700">{formData.unit}</p>
+                                </div>
+                                <div className="rounded-lg bg-amber-50 p-3 col-span-2">
+                                    <p className="text-xs text-amber-700">แจ้งเตือนเมื่อเหลือ</p>
+                                    <p className="mt-1 text-lg font-bold text-amber-700">{formData.minStock} {formData.unit}</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                            <h2 className="text-sm font-semibold text-gray-900 mb-2">หมวดปัจจุบัน</h2>
+                            <div className="space-y-2 text-sm">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-gray-500">รหัส</span>
+                                    <span className="font-semibold text-gray-900">{selectedCategory?.code || "-"}</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-gray-500">หมวด</span>
+                                    <span className="font-semibold text-gray-900 text-right">{selectedCategory?.name || formData.category || "-"}</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-gray-500">กลุ่มงาน</span>
+                                    <span className="font-semibold text-gray-900 text-right">{selectedCategory?.phase || "-"}</span>
+                                </div>
+                            </div>
+                        </section>
+                    </aside>
+
+                    <main className="space-y-4">
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Icons.Tool className="w-5 h-5 text-teal-600" />
+                                <h2 className="font-semibold text-gray-900">ข้อมูลหลัก</h2>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        ชื่ออุปกรณ์ <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        name="name"
+                                        value={formData.name}
+                                        onChange={handleChange}
+                                        required
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">รหัสอุปกรณ์</label>
+                                    <input
+                                        type="text"
+                                        name="code"
+                                        value={formData.code}
+                                        onChange={handleChange}
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">สถานะ</label>
+                                    <select
+                                        name="status"
+                                        value={formData.status}
+                                        onChange={handleChange}
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    >
+                                        <option value="available">พร้อมใช้งาน</option>
+                                        <option value="damaged">ชำรุด</option>
+                                        <option value="lost">หาย</option>
+                                        <option value="retired">ยกเลิกใช้งาน</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">กลุ่มงาน</label>
+                                    <select
+                                        name="categoryPhaseSelector"
+                                        value={selectedPhase}
+                                        onChange={handleChange}
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    >
+                                        <option value="">เลือกกลุ่มงาน...</option>
+                                        {categoryPhases.map((phase) => (
+                                            <option key={phase} value={phase}>{phase}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">หมวดหมู่</label>
+                                    <select
+                                        name="categoryCode"
+                                        value={formData.categoryCode || filteredCategories.find((cat) => cat.name === formData.category)?.code || ""}
+                                        onChange={handleChange}
+                                        disabled={!selectedPhase}
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                    >
+                                        <option value="">{selectedPhase ? "เลือกหมวดหมู่..." : "เลือกกลุ่มงานก่อน"}</option>
+                                        {filteredCategories.map(cat => (
+                                            <option key={cat.code} value={cat.code}>
+                                                {cat.code} - {cat.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">ตำแหน่งจัดเก็บ</label>
+                                    {locations.length > 0 ? (
+                                        <select
+                                            name="location"
+                                            value={formData.location}
+                                            onChange={handleChange}
+                                            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                        >
+                                            <option value="">เลือกตำแหน่ง...</option>
+                                            {locations.map(loc => (
+                                                <option key={loc} value={loc}>{loc}</option>
+                                            ))}
+                                        </select>
+                                    ) : (
+                                        <input
+                                            type="text"
+                                            name="location"
+                                            value={formData.location}
+                                            onChange={handleChange}
+                                            className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                        />
+                                    )}
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5">
+                            <h2 className="font-semibold text-gray-900 mb-4">ประเภทและสต็อก</h2>
+                            <div className="grid grid-cols-2 gap-2 mb-4 rounded-lg bg-gray-100 p-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setFormData((prev: any) => ({ ...prev, type: 'borrowable' }))}
+                                    className={`rounded-md px-3 py-2 text-sm font-semibold transition-colors ${formData.type === 'borrowable'
+                                        ? 'bg-white text-blue-700 shadow-sm'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                        }`}
+                                >
+                                    ยืม-คืน
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setFormData((prev: any) => ({ ...prev, type: 'consumable' }))}
+                                    className={`rounded-md px-3 py-2 text-sm font-semibold transition-colors ${formData.type === 'consumable'
+                                        ? 'bg-white text-purple-700 shadow-sm'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                        }`}
+                                >
+                                    เบิก
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">จำนวนทั้งหมด</label>
+                                    <input
+                                        type="number"
+                                        name="quantity"
+                                        value={formData.quantity}
+                                        onChange={handleChange}
+                                        min="0"
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">หน่วย</label>
+                                    <input
+                                        type="text"
+                                        name="unit"
+                                        value={formData.unit}
+                                        onChange={handleChange}
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">แจ้งเตือนเมื่อเหลือ</label>
+                                    <input
+                                        type="number"
+                                        name="minStock"
+                                        value={formData.minStock}
+                                        onChange={handleChange}
+                                        min="0"
+                                        className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                </div>
+                            </div>
+                        </section>
+
+                        <section className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-5">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">รายละเอียด</label>
+                            <textarea
+                                name="description"
+                                value={formData.description}
+                                onChange={handleChange}
+                                rows={4}
+                                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
+                                placeholder="รายละเอียดเพิ่มเติม..."
+                            />
+                        </section>
+                    </main>
+                </div>
+
+                <div className="fixed inset-x-0 bottom-0 z-20 border-t border-gray-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
+                    <div className="max-w-6xl mx-auto px-4 py-3 flex gap-3 justify-end">
+                        <button
+                            type="button"
+                            onClick={() => router.back()}
+                            className="px-5 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-all"
+                        >
+                            ยกเลิก
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={isBusy}
+                            className="px-6 py-2.5 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-all disabled:bg-gray-400"
+                        >
+                            {isSubmitting ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+                        </button>
+                    </div>
                 </div>
             </form>
         </div>

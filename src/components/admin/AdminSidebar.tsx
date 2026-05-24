@@ -87,6 +87,7 @@ export default function AdminSidebar({ isOpen = false, onClose = () => { } }: { 
                                 <li key={item.href}>
                                     <Link
                                         href={item.href}
+                                        prefetch={false}
                                         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${active
                                             ? 'bg-white text-gray-900 font-semibold shadow-lg'
                                             : 'hover:bg-white/20'
@@ -134,6 +135,7 @@ export default function AdminSidebar({ isOpen = false, onClose = () => { } }: { 
                                 <li key={item.href}>
                                     <Link
                                         href={item.href}
+                                        prefetch={false}
                                         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${active
                                             ? 'bg-white text-gray-900 font-semibold shadow-lg'
                                             : 'hover:bg-white/20'

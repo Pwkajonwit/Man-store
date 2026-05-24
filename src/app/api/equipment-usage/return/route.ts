@@ -51,12 +51,36 @@ export async function POST(request: Request) {
             );
         }
 
+        const settingsDoc = await admin.firestore().collection('settings').doc('equipment').get();
+        const returnApprovalEnabled = settingsDoc.exists
+            ? settingsDoc.data()?.returnApprovalEnabled ?? true
+            : true;
+
+        if (returnApprovalEnabled) {
+            await usageRef.update({
+                returnRequestTime: new Date(),
+                returnQuantity: qtyToReturn,
+                returnNote: note || '',
+                status: 'pending_return',
+                updatedAt: new Date(),
+            });
+
+            return NextResponse.json({
+                success: true,
+                pendingApproval: true,
+                message: 'แจ้งคืนอุปกรณ์สำเร็จ รออนุมัติ',
+                returnQuantity: qtyToReturn,
+            });
+        }
+
         // Update usage record
         await usageRef.update({
             returnTime: new Date(),
+            returnRequestTime: new Date(),
             returnQuantity: qtyToReturn,
             returnNote: note || '',
             status: 'returned',
+            approverId: 'auto',
             updatedAt: new Date(),
         });
 

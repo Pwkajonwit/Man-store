@@ -21,16 +21,15 @@ const useLiff = (liffId: string | undefined): UseLiffReturn => {
             // =====================================================
             // DEVELOPMENT MODE: ข้ามการ Login LINE ใน Development
             // =====================================================
-            const isDev = process.env.NODE_ENV === 'development';
             const useMockLiff = process.env.NEXT_PUBLIC_MOCK_LIFF === 'true';
 
-            if (isDev && useMockLiff) {
+            if (useMockLiff) {
                 console.log('🔧 Development Mode: Using Mock LIFF');
 
                 // สร้าง Mock LIFF object
                 const mockLiff = {
                     isLoggedIn: () => true,
-                    getAccessToken: () => 'mock_access_token_dev',
+                    getAccessToken: () => 'MOCK_ACCESS_TOKEN',
                     getProfile: async () => ({
                         userId: 'dev_user_001',
                         displayName: 'Dev User',

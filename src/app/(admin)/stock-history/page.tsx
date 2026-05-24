@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, onSnapshot, query, orderBy, where, Timestamp } from "firebase/firestore";
+import { collection, doc, onSnapshot, query, orderBy } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Link from "next/link";
 
@@ -17,10 +17,57 @@ interface StockHistory {
     createdAt: any;
 }
 
+interface EquipmentMeta {
+    id: string;
+    category?: string;
+    categoryCode?: string;
+    categoryName?: string;
+    categoryPhase?: string;
+}
+
+interface CategoryItem {
+    code: string;
+    name: string;
+    phase: string;
+    sortOrder: number;
+    active: boolean;
+}
+
+function normalizeCategoryItems(categoryItems: any, fallbackCategories: any): CategoryItem[] {
+    if (Array.isArray(categoryItems) && categoryItems.length > 0) {
+        return categoryItems
+            .map((item, index) => ({
+                code: String(item.code || "").trim().toUpperCase(),
+                name: String(item.name || "").trim(),
+                phase: String(item.phase || "").trim(),
+                sortOrder: Number(item.sortOrder) || index + 1,
+                active: item.active !== false,
+            }))
+            .filter((item) => item.code && item.name)
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    }
+
+    if (Array.isArray(fallbackCategories) && fallbackCategories.length > 0) {
+        return fallbackCategories.map((name, index) => ({
+            code: `C${String(index + 1).padStart(2, "0")}`,
+            name: String(name),
+            phase: "ทั่วไป",
+            sortOrder: index + 1,
+            active: true,
+        }));
+    }
+
+    return [];
+}
+
 export default function StockHistoryPage() {
     const [history, setHistory] = useState<StockHistory[]>([]);
+    const [equipmentMeta, setEquipmentMeta] = useState<Map<string, EquipmentMeta>>(new Map());
+    const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [filterType, setFilterType] = useState<'all' | 'restock' | 'adjust'>('all');
+    const [phaseFilter, setPhaseFilter] = useState('all');
+    const [categoryFilter, setCategoryFilter] = useState('all');
     const [searchQuery, setSearchQuery] = useState('');
     const [dateRange, setDateRange] = useState<'all' | 'today' | 'week' | 'month'>('all');
 
@@ -40,6 +87,34 @@ export default function StockHistoryPage() {
             } as StockHistory));
             setHistory(data);
             setLoading(false);
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        if (!db) return;
+
+        const unsubscribe = onSnapshot(collection(db as any, 'equipment'), (snapshot) => {
+            const nextMeta = new Map<string, EquipmentMeta>();
+            snapshot.docs.forEach((doc) => {
+                nextMeta.set(doc.id, { id: doc.id, ...doc.data() } as EquipmentMeta);
+            });
+            setEquipmentMeta(nextMeta);
+        });
+
+        return () => unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        if (!db) return;
+
+        const unsubscribe = onSnapshot(doc(db as any, "settings", "equipment"), (docSnap) => {
+            if (!docSnap.exists()) return;
+            const data = docSnap.data();
+            setCategoryItems(normalizeCategoryItems(data.categoryItems, data.categories).filter((item) => item.active));
+        }, (error) => {
+            console.error("Error loading category settings:", error);
         });
 
         return () => unsubscribe();
@@ -66,14 +141,36 @@ export default function StockHistoryPage() {
         }
     };
 
+    const categoryPhaseByCode = new Map(categoryItems.map((item) => [item.code, item.phase]));
+    const phases = [...new Set(categoryItems.map((item) => item.phase).filter(Boolean))];
+    const fallbackCategories = [...new Set(
+        Array.from(equipmentMeta.values())
+            .map((item) => item.categoryName || item.category)
+            .filter((category): category is string => !!category)
+    )];
+    const categories = categoryItems.length > 0
+        ? categoryItems
+        : fallbackCategories.map((name, index) => ({ code: name, name, phase: "ทั่วไป", sortOrder: index + 1, active: true }));
+
     // Filtered history
     const filteredHistory = history.filter(item => {
+        const meta = equipmentMeta.get(item.equipmentId);
+        const itemCategoryCode = meta?.categoryCode || '';
+        const itemCategoryName = meta?.categoryName || meta?.category || '';
+        const itemCategoryPhase = meta?.categoryPhase || (itemCategoryCode ? categoryPhaseByCode.get(itemCategoryCode) : '') || '';
         const matchType = filterType === 'all' || item.type === filterType;
+        const matchPhase = phaseFilter === 'all' || itemCategoryPhase === phaseFilter;
+        const matchCategory = categoryFilter === 'all' ||
+            itemCategoryCode === categoryFilter ||
+            itemCategoryName === categoryFilter ||
+            meta?.category === categoryFilter;
         const matchSearch = !searchQuery ||
             item.equipmentName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            itemCategoryCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            itemCategoryName.toLowerCase().includes(searchQuery.toLowerCase()) ||
             item.note?.toLowerCase().includes(searchQuery.toLowerCase());
         const matchDate = getDateFilter(new Date(item.createdAt));
-        return matchType && matchSearch && matchDate;
+        return matchType && matchPhase && matchCategory && matchSearch && matchDate;
     });
 
     // Format date
@@ -203,6 +300,35 @@ export default function StockHistoryPage() {
 
                     {/* Date Range */}
                     <select
+                        value={phaseFilter}
+                        onChange={(e) => {
+                            setPhaseFilter(e.target.value);
+                            setCategoryFilter('all');
+                        }}
+                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white"
+                    >
+                        <option value="all">ทุกกลุ่มงาน</option>
+                        {phases.map(phase => (
+                            <option key={phase} value={phase}>{phase}</option>
+                        ))}
+                    </select>
+
+                    <select
+                        value={categoryFilter}
+                        onChange={(e) => setCategoryFilter(e.target.value)}
+                        className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white"
+                    >
+                        <option value="all">ทุกหมวดหมู่</option>
+                        {categories
+                            .filter(category => phaseFilter === 'all' || category.phase === phaseFilter)
+                            .map(category => (
+                                <option key={category.code} value={category.code}>
+                                    {category.code !== category.name ? `${category.code} - ${category.name}` : category.name}
+                                </option>
+                            ))}
+                    </select>
+
+                    <select
                         value={dateRange}
                         onChange={(e) => setDateRange(e.target.value as any)}
                         className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white"
@@ -268,6 +394,17 @@ export default function StockHistoryPage() {
                                             >
                                                 {item.equipmentName}
                                             </Link>
+                                            {(() => {
+                                                const meta = equipmentMeta.get(item.equipmentId);
+                                                const categoryLabel = meta?.categoryCode
+                                                    ? `${meta.categoryCode} - ${meta.categoryName || meta.category || ''}`
+                                                    : meta?.categoryName || meta?.category;
+                                                return categoryLabel ? (
+                                                    <div className="text-xs text-gray-400 mt-0.5">
+                                                        {categoryLabel}{meta?.categoryPhase ? ` • ${meta.categoryPhase}` : ''}
+                                                    </div>
+                                                ) : null;
+                                            })()}
                                         </td>
                                         <td className="px-4 py-3 text-center">
                                             <span className={`px-2 py-1 text-xs font-medium rounded-full ${item.type === 'restock'

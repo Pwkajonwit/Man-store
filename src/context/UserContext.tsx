@@ -64,10 +64,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
             } else {
                 console.log("User is not logged in");
                 // Development mode check
-                const isDev = process.env.NODE_ENV === 'development';
                 const useMockLiff = process.env.NEXT_PUBLIC_MOCK_LIFF === 'true';
 
-                if (isDev && useMockLiff) {
+                if (useMockLiff) {
                     console.log("🔧 Development Mode: Using Mock User");
                     const mockLineId = 'dev_user_001';
                     const mockProfile = {

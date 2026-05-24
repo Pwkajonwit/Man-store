@@ -1,14 +1,20 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import dynamic from 'next/dynamic';
 import { useAuth } from "@/context/AuthContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
-import { db } from "@/lib/firebase";
+import { db, storage } from "@/lib/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import MainHeader from '@/components/main/MainHeader';
-import QRScannerModal from '@/components/ui/QRScannerModal';
+
+const QRScannerModal = dynamic(() => import('@/components/ui/QRScannerModal'), {
+    ssr: false,
+    loading: () => null,
+});
 
 interface Equipment {
     id: string;
@@ -133,16 +139,25 @@ export default function EquipmentSelectionPage() {
     const [showScanner, setShowScanner] = useState(false);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [purpose, setPurpose] = useState("");
+    const [borrowForMode, setBorrowForMode] = useState(false);
+    const [borrowerName, setBorrowerName] = useState("");
+    const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+    const [attachmentPreview, setAttachmentPreview] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitProgress, setSubmitProgress] = useState({ current: 0, total: 0 });
     const [message, setMessage] = useState("");
     const [displayCount, setDisplayCount] = useState(20); // Load More
+    const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+    const isAdmin = userProfile?.role === 'admin';
 
     // Debounce search query
     const debouncedSearch = useDebounce(searchQuery, 300);
 
     // Get LINE settings from context (loaded once in layout)
     const userChatMessageEnabled = lineSettings.userChatMessage;
+    const currentUserId = userProfile?.lineId || user?.uid || '';
+    const currentUserName = userProfile?.name || userProfile?.displayName || user?.displayName || 'ไม่ระบุชื่อ';
+    const isBorrowFor = borrowForMode && activeTab === 'borrowable';
 
     // ดึงรายการอุปกรณ์
     useEffect(() => {
@@ -170,6 +185,21 @@ export default function EquipmentSelectionPage() {
         setSelectedCategory('all');
         setDisplayCount(20);
     }, [activeTab]);
+
+    useEffect(() => {
+        if (activeTab !== 'borrowable' && borrowForMode) {
+            setBorrowForMode(false);
+            setBorrowerName("");
+        }
+    }, [activeTab, borrowForMode]);
+
+    useEffect(() => {
+        return () => {
+            if (attachmentPreview) {
+                URL.revokeObjectURL(attachmentPreview);
+            }
+        };
+    }, [attachmentPreview]);
 
     // Reset displayCount when filters change
     useEffect(() => {
@@ -246,6 +276,41 @@ export default function EquipmentSelectionPage() {
 
     const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
+    const toggleBorrowForMode = () => {
+        setBorrowForMode(prev => {
+            const next = !prev;
+            if (next) {
+                setActiveTab('borrowable');
+            } else {
+                setBorrowerName("");
+            }
+            setCart([]);
+            return next;
+        });
+    };
+
+    const handleAttachmentChange = (file?: File | null) => {
+        if (attachmentPreview) {
+            URL.revokeObjectURL(attachmentPreview);
+        }
+
+        if (!file) {
+            setAttachmentFile(null);
+            setAttachmentPreview("");
+            return;
+        }
+
+        setAttachmentFile(file);
+        setAttachmentPreview(URL.createObjectURL(file));
+    };
+
+    const clearAttachment = () => {
+        handleAttachmentChange(null);
+        if (attachmentInputRef.current) {
+            attachmentInputRef.current.value = "";
+        }
+    };
+
     const handleScan = (decodedText: string) => {
         try {
             // Try to parse as JSON first (from our generator)
@@ -272,15 +337,42 @@ export default function EquipmentSelectionPage() {
         if (cart.length === 0) return;
         if (!db) return;
 
+        const trimmedBorrowerName = borrowerName.trim();
+        if (isBorrowFor && !trimmedBorrowerName) {
+            setMessage("กรุณาระบุชื่อพนักงานที่ยืม");
+            setTimeout(() => setMessage(""), 3000);
+            return;
+        }
+
         setIsSubmitting(true);
         setSubmitProgress({ current: 0, total: cart.length });
 
         let successCount = 0;
         let failCount = 0;
         const type = activeTab === 'borrowable' ? 'borrow' : 'withdraw';
+        const requestUserId = isBorrowFor ? `borrow-for:${trimmedBorrowerName}` : currentUserId;
+        const requestUserName = isBorrowFor ? trimmedBorrowerName : currentUserName;
+        let attachmentImageUrl = "";
+        let attachmentFileName = "";
+
+        try {
+            if (attachmentFile) {
+                attachmentFileName = attachmentFile.name;
+                const extension = attachmentFile.name.split('.').pop() || 'jpg';
+                const fileRef = ref(storage, `equipment-usage-attachments/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`);
+                await uploadBytes(fileRef, attachmentFile);
+                attachmentImageUrl = await getDownloadURL(fileRef);
+            }
+        } catch (error) {
+            console.error("Error uploading attachment:", error);
+            setIsSubmitting(false);
+            setMessage("อัปโหลดรูปแนบไม่สำเร็จ");
+            setTimeout(() => setMessage(""), 3000);
+            return;
+        }
 
         // Import Firestore functions dynamically or ensure they are imported at top
-        const { addDoc, collection, doc, updateDoc, getDoc, Timestamp, runTransaction } = await import("firebase/firestore");
+        const { collection, doc, Timestamp, runTransaction } = await import("firebase/firestore");
 
         for (let i = 0; i < cart.length; i++) {
             const item = cart[i];
@@ -312,14 +404,20 @@ export default function EquipmentSelectionPage() {
                         equipmentImageUrl: item.imageUrl || '',
                         equipmentCategory: equipmentData.category || '',
                         equipmentLocation: equipmentData.location || '',
-                        userId: userProfile?.lineId || user?.uid,
-                        userName: userProfile?.name || userProfile?.displayName || user?.displayName || 'ไม่ระบุชื่อ',
+                        userId: requestUserId,
+                        userName: requestUserName,
+                        requestedByUserId: currentUserId,
+                        requestedByUserName: currentUserName,
+                        borrowFor: isBorrowFor,
+                        borrowerName: isBorrowFor ? trimmedBorrowerName : '',
                         type: type,
                         quantity: item.quantity,
                         unit: item.unit || 'ชิ้น',
                         borrowTime: Timestamp.now(),
                         returnTime: null,
                         purpose: purpose || '',
+                        attachmentImageUrl,
+                        attachmentFileName,
                         status: 'active', // active | returned
                         createdAt: Timestamp.now(),
                         updatedAt: Timestamp.now(),
@@ -373,7 +471,7 @@ export default function EquipmentSelectionPage() {
 
                         await liff.sendMessages([{
                             type: 'flex',
-                            altText: `${actionText}อุปกรณ์ ${successCount} รายการ`,
+                            altText: `${isBorrowFor ? 'ยืมแทน' : actionText}อุปกรณ์ ${successCount} รายการ`,
                             contents: {
                                 type: 'bubble',
                                 size: 'kilo',
@@ -381,8 +479,12 @@ export default function EquipmentSelectionPage() {
                                     type: 'box',
                                     layout: 'vertical',
                                     contents: [
-                                        { type: 'text', text: `${actionText}อุปกรณ์สำเร็จ`, weight: 'bold', size: 'md', color: '#333333' },
+                                        { type: 'text', text: `${isBorrowFor ? 'ยืมแทนอุปกรณ์' : `${actionText}อุปกรณ์`}สำเร็จ`, weight: 'bold', size: 'md', color: '#333333' },
                                         { type: 'text', text: `${successCount} รายการ`, size: 'sm', color: '#888888', margin: 'xs' },
+                                        ...(isBorrowFor ? [
+                                            { type: 'text', text: `ผู้ยืม: ${trimmedBorrowerName}`, size: 'xs', color: '#D97706', margin: 'sm', wrap: true },
+                                            { type: 'text', text: `ทำแทนโดย: ${currentUserName}`, size: 'xs', color: '#D97706', margin: 'xxs', wrap: true },
+                                        ] : []),
                                         { type: 'separator', margin: 'lg' },
                                         { type: 'box', layout: 'vertical', contents: itemContents, margin: 'lg', spacing: 'sm' },
                                         ...(purpose ? [
@@ -404,6 +506,7 @@ export default function EquipmentSelectionPage() {
 
             setCart([]);
             setPurpose("");
+            clearAttachment();
             if (activeTab === 'borrowable') {
                 setTimeout(() => router.push('/my-equipment'), 1500);
             }
@@ -416,7 +519,23 @@ export default function EquipmentSelectionPage() {
 
     return (
         <div className="min-h-screen bg-gray-50 pb-24">
-            <MainHeader userProfile={userProfile} activeTab="borrow" setActiveTab={() => { }} />
+            <MainHeader
+                userProfile={userProfile}
+                activeTab="borrow"
+                setActiveTab={() => { }}
+                rightAction={isAdmin ? (
+                    <button
+                        type="button"
+                        onClick={toggleBorrowForMode}
+                        className={`px-4 py-2 rounded-xl text-sm font-semibold shadow-sm transition-colors ${isBorrowFor
+                            ? 'bg-amber-500 text-white hover:bg-amber-600'
+                            : 'bg-white text-gray-700 hover:bg-gray-50'
+                            }`}
+                    >
+                        ยืมแทน
+                    </button>
+                ) : null}
+            />
 
             <div className="px-4 -mt-16">
                 {/* Main Card */}
@@ -445,6 +564,21 @@ export default function EquipmentSelectionPage() {
 
                     {/* Search & Filter */}
                     <div className="p-4 border-b border-gray-100 space-y-3">
+                        {isBorrowFor && (
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                                <label className="block text-sm font-semibold text-amber-900 mb-2">
+                                    ชื่อพนักงานที่ยืม
+                                </label>
+                                <input
+                                    type="text"
+                                    value={borrowerName}
+                                    onChange={(e) => setBorrowerName(e.target.value)}
+                                    placeholder="กรอกชื่อพนักงาน"
+                                    className="w-full px-3 py-2.5 border border-amber-200 bg-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                                />
+                            </div>
+                        )}
+
                         {/* Search */}
                         <div className="relative">
                             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -576,6 +710,11 @@ export default function EquipmentSelectionPage() {
                             <div className="text-xs text-gray-500 truncate">
                                 {cart.map(c => c.name).join(', ')}
                             </div>
+                            {isBorrowFor && (
+                                <div className="text-xs text-amber-700 mt-1 truncate">
+                                    ยืมแทน: {borrowerName.trim() || 'ยังไม่ได้ระบุชื่อ'}
+                                </div>
+                            )}
                         </div>
                         <button
                             onClick={() => setShowConfirmModal(true)}
@@ -584,7 +723,7 @@ export default function EquipmentSelectionPage() {
                                 : 'bg-purple-600 hover:bg-purple-700'
                                 }`}
                         >
-                            {activeTab === 'borrowable' ? 'ยืม' : 'เบิก'}
+                            {isBorrowFor ? 'ยืนยันยืมแทน' : (activeTab === 'borrowable' ? 'ยืม' : 'เบิก')}
                         </button>
                     </div>
                 </div>
@@ -600,7 +739,20 @@ export default function EquipmentSelectionPage() {
                             </h3>
                         </div>
 
-                        <div className="p-4 max-h-[40vh] overflow-auto">
+                        <div className="p-4 max-h-[55vh] overflow-auto">
+                            {isBorrowFor && (
+                                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                                    <p className="text-xs font-medium text-amber-700 mb-1">ยืมแทน</p>
+                                    <input
+                                        type="text"
+                                        value={borrowerName}
+                                        onChange={(e) => setBorrowerName(e.target.value)}
+                                        placeholder="ชื่อพนักงานที่ยืม"
+                                        className="w-full px-3 py-2 border border-amber-200 bg-white rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                    />
+                                </div>
+                            )}
+
                             <div className="space-y-2">
                                 {cart.map(item => (
                                     <div key={item.id} className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg">
@@ -637,6 +789,47 @@ export default function EquipmentSelectionPage() {
                                     rows={2}
                                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 resize-none"
                                 />
+                            </div>
+
+                            <div className="mt-4">
+                                <input
+                                    ref={attachmentInputRef}
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    className="hidden"
+                                    onChange={(e) => handleAttachmentChange(e.target.files?.[0])}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => attachmentInputRef.current?.click()}
+                                    className="w-full py-2.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h2l1.5-2h7L17 7h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    </svg>
+                                    ถ่ายรูป / แนบรูป
+                                </button>
+                                {attachmentPreview && (
+                                    <div className="mt-3 rounded-xl border border-gray-200 overflow-hidden bg-gray-50">
+                                        <Image
+                                            src={attachmentPreview}
+                                            alt="attachment preview"
+                                            width={320}
+                                            height={180}
+                                            className="w-full max-h-48 object-cover"
+                                            unoptimized
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={clearAttachment}
+                                            className="w-full py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                                        >
+                                            ลบรูปแนบ
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
 

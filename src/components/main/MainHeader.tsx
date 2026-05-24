@@ -9,11 +9,15 @@ interface MainHeaderProps {
     userProfile: UserProfile | null;
     activeTab?: string;
     setActiveTab?: (tab: string) => void;
+    rightAction?: React.ReactNode;
 }
 
-export default function MainHeader({ userProfile, activeTab, setActiveTab }: MainHeaderProps) {
+export default function MainHeader({ userProfile, activeTab, setActiveTab, rightAction }: MainHeaderProps) {
     const router = useRouter();
     const pathname = usePathname();
+    const profileLabel = userProfile?.role === 'admin'
+        ? 'ผู้ดูแลระบบ'
+        : userProfile?.position || 'พนักงาน';
 
     useEffect(() => {
         if (!setActiveTab) return;
@@ -50,10 +54,14 @@ export default function MainHeader({ userProfile, activeTab, setActiveTab }: Mai
                     </div>
                     <div className="text-white">
                         <p className="font-semibold text-lg">{userProfile?.name || 'ผู้ใช้งาน'}</p>
-                        <p className="text-sm text-teal-100">{userProfile?.position || 'พนักงาน'}</p>
+                        <p className="text-sm text-teal-100">{profileLabel}</p>
                     </div>
                 </div>
-
+                {rightAction && (
+                    <div className="shrink-0">
+                        {rightAction}
+                    </div>
+                )}
             </div>
 
             {/* Tabs */}

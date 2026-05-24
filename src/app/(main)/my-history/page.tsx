@@ -20,6 +20,12 @@ interface UsageHistory {
     returnTime?: any;
     type?: 'borrow' | 'withdraw';
     status?: string;
+    userId?: string;
+    userName?: string;
+    requestedByUserId?: string;
+    requestedByUserName?: string;
+    borrowFor?: boolean;
+    borrowerName?: string;
     [key: string]: any;
 }
 
@@ -39,9 +45,18 @@ export default function EquipmentHistoryPage() {
             if (!userId) return;
 
             try {
-                const q = query(collection(db as any, "equipment-usage"), where("userId", "==", userId));
-                const snapshot = await getDocs(q);
-                const data = snapshot.docs.map(doc => {
+                const ownQuery = query(collection(db as any, "equipment-usage"), where("userId", "==", userId));
+                const requestedByQuery = query(collection(db as any, "equipment-usage"), where("requestedByUserId", "==", userId));
+                const [ownSnapshot, requestedBySnapshot] = await Promise.all([
+                    getDocs(ownQuery),
+                    getDocs(requestedByQuery),
+                ]);
+
+                const docs = new Map<string, any>();
+                ownSnapshot.docs.forEach((doc) => docs.set(doc.id, doc));
+                requestedBySnapshot.docs.forEach((doc) => docs.set(doc.id, doc));
+
+                const data = Array.from(docs.values()).map(doc => {
                     const d = doc.data();
                     return {
                         id: doc.id,
@@ -75,6 +90,7 @@ export default function EquipmentHistoryPage() {
     const hasMore = displayCount < filtered.length;
     const borrowCount = history.filter(h => h.type === 'borrow').length;
     const withdrawCount = history.filter(h => h.type === 'withdraw').length;
+    const viewerUserId = userProfile?.lineId || user?.uid || '';
 
     const loadMore = () => setDisplayCount(prev => prev + ITEMS_PER_PAGE);
 
@@ -129,8 +145,13 @@ export default function EquipmentHistoryPage() {
                 ) : (
                     <>
                         <div className="space-y-2">
-                            {displayed.map(item => (
-                                <div key={item.id} className="bg-white rounded-xl shadow-sm p-3 flex items-center gap-3">
+                            {displayed.map(item => {
+                                const isBorrowFor = Boolean(item.borrowFor || (item.requestedByUserId === viewerUserId && item.userId !== viewerUserId));
+                                const borrower = item.borrowerName || item.userName || '-';
+                                const requestedBy = item.requestedByUserName || '-';
+
+                                return (
+                                <div key={item.id} className={`bg-white rounded-xl shadow-sm p-3 flex items-center gap-3 ${isBorrowFor ? 'border border-amber-100 bg-amber-50/30' : ''}`}>
                                     {/* Image */}
                                     <div className="w-10 h-10 bg-gray-100 rounded-lg flex-shrink-0 overflow-hidden">
                                         {item.equipmentImageUrl ? (
@@ -146,12 +167,24 @@ export default function EquipmentHistoryPage() {
 
                                     {/* Info */}
                                     <div className="flex-1 min-w-0">
-                                        <h3 className="font-medium text-gray-800 text-sm truncate">{item.equipmentName}</h3>
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                            <h3 className="font-medium text-gray-800 text-sm truncate">{item.equipmentName}</h3>
+                                            {isBorrowFor && (
+                                                <span className="shrink-0 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold">
+                                                    ยืมแทน
+                                                </span>
+                                            )}
+                                        </div>
                                         <div className="flex items-center gap-2 text-xs text-gray-500">
                                             <span>{item.quantity} {item.unit}</span>
                                             <span>•</span>
                                             <span>{formatDate(item.borrowTime || item.withdrawTime)}</span>
                                         </div>
+                                        {isBorrowFor && (
+                                            <p className="mt-0.5 text-[11px] text-amber-700 truncate">
+                                                ผู้ยืม: {borrower} • ทำแทนโดย {requestedBy}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {/* Status Badges */}
@@ -175,7 +208,8 @@ export default function EquipmentHistoryPage() {
                                         )}
                                     </div>
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
 
                         {/* Load More */}

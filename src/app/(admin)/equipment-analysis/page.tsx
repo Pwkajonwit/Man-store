@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { collection, query, where, onSnapshot, getDocs } from "firebase/firestore";
+import { useState, useEffect, useMemo } from "react";
+import { collection, query, where, onSnapshot, getDocs, orderBy, limit } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Link from "next/link";
 
@@ -104,7 +104,11 @@ export default function EquipmentAnalysisPage() {
             if (!db) return;
             try {
                 // ดึงข้อมูลการยืม/เบิก
-                const usageSnapshot = await getDocs(collection(db as any, "equipment-usage"));
+                const usageSnapshot = await getDocs(query(
+                    collection(db as any, "equipment-usage"),
+                    orderBy("createdAt", "desc"),
+                    limit(20)
+                ));
                 const usageData = usageSnapshot.docs.map(doc => {
                     const d = doc.data();
                     return {
@@ -119,7 +123,11 @@ export default function EquipmentAnalysisPage() {
                 });
 
                 // ดึงข้อมูลการนำเข้า/เติมสต็อก
-                const stockSnapshot = await getDocs(collection(db as any, "stock-history"));
+                const stockSnapshot = await getDocs(query(
+                    collection(db as any, "stock-history"),
+                    orderBy("createdAt", "desc"),
+                    limit(20)
+                ));
                 const stockData = stockSnapshot.docs.map(doc => {
                     const d = doc.data();
                     return {
@@ -179,11 +187,11 @@ export default function EquipmentAnalysisPage() {
     };
 
     // Calculate stats
-    const borrowableCount = equipment.filter(e => e.type === 'borrowable').length;
-    const consumableCount = equipment.filter(e => e.type === 'consumable').length;
+    const borrowableCount = useMemo(() => equipment.filter(e => e.type === 'borrowable').length, [equipment]);
+    const consumableCount = useMemo(() => equipment.filter(e => e.type === 'consumable').length, [equipment]);
 
     // Low stock: เช็คจาก status หรือเทียบกับ minStock ที่ตั้งไว้
-    const lowStockItems = equipment.filter(e => {
+    const lowStockItems = useMemo(() => equipment.filter(e => {
         // แบบเดิม: เช็คจาก status
         if (e.status === 'low_stock' || e.status === 'out_of_stock') return true;
         // แบบใหม่: เทียบกับ minStock ที่ตั้งไว้
@@ -191,11 +199,11 @@ export default function EquipmentAnalysisPage() {
         // หมดสต็อก
         if (e.availableQuantity <= 0) return true;
         return false;
-    });
+    }), [equipment]);
 
     // แยกประเภท alert
-    const outOfStockItems = lowStockItems.filter(e => e.availableQuantity <= 0);
-    const belowMinStockItems = lowStockItems.filter(e => e.availableQuantity > 0 && e.minStock && e.availableQuantity <= e.minStock);
+    const outOfStockItems = useMemo(() => lowStockItems.filter(e => e.availableQuantity <= 0), [lowStockItems]);
+    const belowMinStockItems = useMemo(() => lowStockItems.filter(e => e.availableQuantity > 0 && e.minStock && e.availableQuantity <= e.minStock), [lowStockItems]);
 
     const totalEquipment = equipment.length;
 

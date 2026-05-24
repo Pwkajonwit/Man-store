@@ -93,45 +93,70 @@ function detailLine(label: string, value: string, color = '#334155') {
     };
 }
 
+function borrowForLine(usage: any) {
+    if (!usage?.borrowFor) return null;
+
+    const borrowerName = truncate(usage.borrowerName || usage.userName, 18);
+    const requestedByName = truncate(usage.requestedByUserName, 18);
+
+    return {
+        type: 'text',
+        text: `ยืมแทน: ${borrowerName} • โดย ${requestedByName}`,
+        size: 'xxs',
+        color: '#D97706',
+        wrap: true,
+        margin: 'xxs',
+    };
+}
+
 function borrowItem(usage: any, index: number) {
     const overdue = isOverdue(usage.expectedReturnDate);
     const qty = `${usage.quantity || 1}${usage.unit || 'ชิ้น'}`;
     const eqName = truncate(usage.equipmentName, 25);
     const userName = truncate(usage.userName, 15);
+    const borrowFor = borrowForLine(usage);
 
     return {
         type: 'box',
-        layout: 'horizontal',
+        layout: 'vertical',
         spacing: 'sm',
         margin: 'xs',
         contents: [
             {
-                type: 'text',
-                text: `${index + 1}.`,
-                size: 'xs',
-                color: '#64748B',
-                flex: 0,
-                wrap: false,
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'sm',
+                contents: [
+                    {
+                        type: 'text',
+                        text: `${index + 1}.`,
+                        size: 'xs',
+                        color: '#64748B',
+                        flex: 0,
+                        wrap: false,
+                    },
+                    {
+                        type: 'text',
+                        text: `${eqName} (${qty})`,
+                        size: 'sm',
+                        color: overdue ? '#DC2626' : '#0F172A',
+                        flex: 1,
+                        wrap: true,
+                        weight: overdue ? 'bold' : 'regular',
+                    },
+                    {
+                        type: 'text',
+                        text: userName,
+                        size: 'sm',
+                        color: overdue ? '#DC2626' : '#64748B',
+                        flex: 0,
+                        align: 'end',
+                        wrap: false,
+                        weight: overdue ? 'bold' : 'regular',
+                    }
+                ],
             },
-            {
-                type: 'text',
-                text: `${eqName} (${qty})`,
-                size: 'sm',
-                color: overdue ? '#DC2626' : '#0F172A',
-                flex: 1,
-                wrap: true,
-                weight: overdue ? 'bold' : 'regular',
-            },
-            {
-                type: 'text',
-                text: userName,
-                size: 'sm',
-                color: overdue ? '#DC2626' : '#64748B',
-                flex: 0,
-                align: 'end',
-                wrap: false,
-                weight: overdue ? 'bold' : 'regular',
-            }
+            ...(borrowFor ? [borrowFor] : []),
         ],
     };
 }
@@ -140,38 +165,106 @@ function returnItem(usage: any, index: number) {
     const qty = `${usage.returnQuantity || usage.quantity || 1}${usage.unit || 'ชิ้น'}`;
     const eqName = truncate(usage.equipmentName, 25);
     const userName = truncate(usage.userName, 15);
+    const borrowFor = borrowForLine(usage);
 
     return {
         type: 'box',
-        layout: 'horizontal',
+        layout: 'vertical',
         spacing: 'sm',
         margin: 'xs',
         contents: [
             {
-                type: 'text',
-                text: `${index + 1}.`,
-                size: 'xs',
-                color: '#64748B',
-                flex: 0,
-                wrap: false,
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'sm',
+                contents: [
+                    {
+                        type: 'text',
+                        text: `${index + 1}.`,
+                        size: 'xs',
+                        color: '#64748B',
+                        flex: 0,
+                        wrap: false,
+                    },
+                    {
+                        type: 'text',
+                        text: `${eqName} (${qty})`,
+                        size: 'sm',
+                        color: '#059669',
+                        flex: 1,
+                        wrap: true,
+                    },
+                    {
+                        type: 'text',
+                        text: userName,
+                        size: 'sm',
+                        color: '#64748B',
+                        flex: 0,
+                        align: 'end',
+                        wrap: false,
+                    }
+                ],
             },
+            ...(borrowFor ? [borrowFor] : []),
+        ],
+    };
+}
+
+function lowStockItem(item: any, index: number) {
+    const available = Number(item.availableQuantity ?? item.quantity ?? 0);
+    const minStock = Number(item.minStock || 0);
+    const unit = item.unit || 'ชิ้น';
+    const category = item.categoryCode && item.categoryName
+        ? `${item.categoryCode} - ${item.categoryName}`
+        : item.categoryName || item.category || '';
+
+    return {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xxs',
+        margin: 'xs',
+        contents: [
             {
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'sm',
+                contents: [
+                    {
+                        type: 'text',
+                        text: `${index + 1}.`,
+                        size: 'xs',
+                        color: '#64748B',
+                        flex: 0,
+                        wrap: false,
+                    },
+                    {
+                        type: 'text',
+                        text: truncate(item.name, 28),
+                        size: 'sm',
+                        color: available <= 0 ? '#DC2626' : '#D97706',
+                        flex: 1,
+                        wrap: true,
+                        weight: available <= 0 ? 'bold' : 'regular',
+                    },
+                    {
+                        type: 'text',
+                        text: `${available}/${minStock} ${unit}`,
+                        size: 'sm',
+                        color: available <= 0 ? '#DC2626' : '#D97706',
+                        flex: 0,
+                        align: 'end',
+                        wrap: false,
+                        weight: 'bold',
+                    },
+                ],
+            },
+            ...(category || item.location ? [{
                 type: 'text',
-                text: `${eqName} (${qty})`,
-                size: 'sm',
-                color: '#059669',
-                flex: 1,
+                text: [category, item.location].filter(Boolean).map((value) => truncate(value, 24)).join(' • '),
+                size: 'xxs',
+                color: '#94A3B8',
                 wrap: true,
-            },
-            {
-                type: 'text',
-                text: userName,
-                size: 'sm',
-                color: '#64748B',
-                flex: 0,
-                align: 'end',
-                wrap: false,
-            }
+            }] : []),
         ],
     };
 }
@@ -185,6 +278,7 @@ function createBubble(
     pendingCount: number,
     itemBoxes: any[],
     pendingSection: any[],
+    lowStockSection: any[],
     accent: string,
     pageText: string
 ) {
@@ -270,15 +364,17 @@ function createBubble(
                     margin: 'lg',
                     contents: itemBoxes,
                 }] : []),
+                ...lowStockSection,
                 ...pendingSection,
             ],
         },
     };
 }
 
-export function equipmentSummaryFlex(type: EquipmentSummaryType, usages: any[], options: { title?: string; generatedAt?: any; pendingUsages?: any[] } = {}) {
+export function equipmentSummaryFlex(type: EquipmentSummaryType, usages: any[], options: { title?: string; generatedAt?: any; pendingUsages?: any[]; lowStockItems?: any[] } = {}) {
     const total = usages.length;
     const pendingUsages = options.pendingUsages || [];
+    const lowStockItems = options.lowStockItems || [];
     const overdueCount = type === 'borrow'
         ? usages.filter((usage) => isOverdue(usage.expectedReturnDate)).length
         : pendingUsages.filter((usage) => isOverdue(usage.expectedReturnDate)).length;
@@ -344,6 +440,55 @@ export function equipmentSummaryFlex(type: EquipmentSummaryType, usages: any[], 
         }
 
         let pendingSection: any[] = [];
+        let lowStockSection: any[] = [];
+        if (type === 'borrow' && pageIndex === 0 && lowStockItems.length > 0) {
+            const lowStockBoxes = lowStockItems.slice(0, 8).map((item, index) => lowStockItem(item, index));
+            lowStockSection = [
+                {
+                    type: 'separator',
+                    margin: 'xl',
+                    color: '#FDE68A',
+                },
+                {
+                    type: 'box',
+                    layout: 'vertical',
+                    margin: 'lg',
+                    spacing: 'sm',
+                    contents: [
+                        {
+                            type: 'box',
+                            layout: 'horizontal',
+                            contents: [
+                                {
+                                    type: 'text',
+                                    text: 'สินค้าใกล้หมด',
+                                    size: 'sm',
+                                    color: '#92400E',
+                                    weight: 'bold',
+                                    flex: 1,
+                                },
+                                {
+                                    type: 'text',
+                                    text: `${lowStockItems.length} รายการ`,
+                                    size: 'xs',
+                                    color: '#D97706',
+                                    align: 'end',
+                                },
+                            ],
+                        },
+                        ...lowStockBoxes,
+                        ...(lowStockItems.length > lowStockBoxes.length ? [{
+                            type: 'text',
+                            text: `และอีก ${lowStockItems.length - lowStockBoxes.length} รายการ`,
+                            size: 'xxs',
+                            color: '#92400E',
+                            align: 'end',
+                        }] : []),
+                    ],
+                },
+            ];
+        }
+
         if (type === 'return') {
             const pendingBoxes: any[] = data.pending.map((p) => borrowItem(p.item, p.globalIndex));
             const showEmptyPending = pageIndex === 0 && pendingUsages.length === 0;
@@ -406,7 +551,7 @@ export function equipmentSummaryFlex(type: EquipmentSummaryType, usages: any[], 
         }
 
         const pageText = `${pageIndex + 1}/${bubblesData.length}`;
-        return createBubble(type, baseTitle, options.generatedAt, total, overdueCount, pendingUsages.length, itemBoxes, pendingSection, accent, pageText);
+        return createBubble(type, baseTitle, options.generatedAt, total, overdueCount, pendingUsages.length, itemBoxes, pendingSection, lowStockSection, accent, pageText);
     });
 
     const limitedBubbles = bubbles.slice(0, 12);

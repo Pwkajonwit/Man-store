@@ -6,10 +6,14 @@ import { db } from "@/lib/firebase";
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, Timestamp, orderBy, getDoc } from "firebase/firestore";
 import MainHeader from '@/components/main/MainHeader';
 import Image from 'next/image';
+import dynamic from 'next/dynamic';
 import { useModal } from '@/components/ui/Modal';
 import { useAppSettings } from '@/context/AppSettingsContext';
-import liff from '@line/liff';
-import QRScannerModal from '@/components/ui/QRScannerModal';
+
+const QRScannerModal = dynamic(() => import('@/components/ui/QRScannerModal'), {
+    ssr: false,
+    loading: () => null,
+});
 
 // Debounce hook
 function useDebounce<T>(value: T, delay: number): T {
@@ -245,9 +249,11 @@ export default function ReportRepairPage() {
                 const notifyDocSnap = await getDoc(doc(db as any, 'settings', 'notifications'));
                 const notifySettings = notifyDocSnap.exists() ? notifyDocSnap.data() : {};
 
-                if (notifySettings.line?.notifyRepairReport && userChatMessageEnabled && liff.isInClient()) {
-                    const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-                    await liff.sendMessages([{
+                if (notifySettings.line?.notifyRepairReport && userChatMessageEnabled) {
+                    const liff = (await import('@line/liff')).default;
+                    if (liff.isInClient()) {
+                        const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+                        await liff.sendMessages([{
                         type: 'flex',
                         altText: `แจ้งซ่อม: ${selectedEquipment.name}`,
                         contents: {
@@ -282,7 +288,8 @@ export default function ReportRepairPage() {
                                 paddingAll: '16px'
                             }
                         }
-                    } as any]);
+                        } as any]);
+                    }
                 }
             } catch (lineError) {
                 console.log('LINE message not sent:', lineError);

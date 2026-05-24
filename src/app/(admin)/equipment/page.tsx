@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useDeferredValue } from "react";
 import { collection, onSnapshot, query, doc, deleteDoc, updateDoc, getDoc, getDocs, addDoc, Timestamp, where } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Link from "next/link";
@@ -15,6 +15,9 @@ interface Equipment {
     type?: 'borrowable' | 'consumable';
     status: string;
     category?: string;
+    categoryCode?: string;
+    categoryName?: string;
+    categoryPhase?: string;
     location?: string;
     imageUrl?: string;
     availableQuantity: number;
@@ -23,12 +26,47 @@ interface Equipment {
     minStock?: number;
 }
 
+interface CategoryItem {
+    code: string;
+    name: string;
+    phase: string;
+    sortOrder: number;
+    active: boolean;
+}
+
 interface RepairReport {
     id: string;
     equipmentId: string;
     status: string;
     problemNote: string;
     reporterName: string;
+}
+
+function normalizeCategoryItems(categoryItems: any, fallbackCategories: any): CategoryItem[] {
+    if (Array.isArray(categoryItems) && categoryItems.length > 0) {
+        return categoryItems
+            .map((item, index) => ({
+                code: String(item.code || "").trim().toUpperCase(),
+                name: String(item.name || "").trim(),
+                phase: String(item.phase || "").trim(),
+                sortOrder: Number(item.sortOrder) || index + 1,
+                active: item.active !== false,
+            }))
+            .filter((item) => item.code && item.name)
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    }
+
+    if (Array.isArray(fallbackCategories) && fallbackCategories.length > 0) {
+        return fallbackCategories.map((name, index) => ({
+            code: `C${String(index + 1).padStart(2, "0")}`,
+            name: String(name),
+            phase: "ทั่วไป",
+            sortOrder: index + 1,
+            active: true,
+        }));
+    }
+
+    return [];
 }
 
 // --- Icons ---
@@ -119,7 +157,7 @@ interface ActionButtonProps {
 function ActionButton({ href, onClick, icon: Icon, colorClass, label }: ActionButtonProps) {
     if (href) {
         return (
-            <Link href={href} className={`p-2 rounded-lg transition-colors ${colorClass} group relative`} title={label}>
+            <Link href={href} prefetch={false} className={`p-2 rounded-lg transition-colors ${colorClass} group relative`} title={label}>
                 <Icon className="w-4 h-4" />
                 <span className="sr-only">{label}</span>
             </Link>
@@ -211,7 +249,8 @@ function EquipmentTable({ equipment, onDelete, onRestock, repairReports }: Equip
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                    {item.category || '-'}
+                                    <div className="font-medium text-gray-700">{item.categoryCode ? `${item.categoryCode} - ` : ''}{item.categoryName || item.category || '-'}</div>
+                                    {item.categoryPhase && <div className="text-xs text-gray-400">{item.categoryPhase}</div>}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                     <div className="flex justify-end gap-2">
@@ -295,11 +334,11 @@ function EquipmentCards({ equipment, onDelete, onRestock, repairReports }: Equip
                                 <Icons.Plus className="w-4 h-4" />
                                 <span className="text-[10px] mt-1">เติม</span>
                             </button>
-                            <Link href={`/equipment/${item.id}`} className="flex flex-col items-center justify-center p-2 rounded bg-gray-50 text-gray-600 hover:bg-gray-100">
+                            <Link href={`/equipment/${item.id}`} prefetch={false} className="flex flex-col items-center justify-center p-2 rounded bg-gray-50 text-gray-600 hover:bg-gray-100">
                                 <Icons.PencilSquare className="w-4 h-4" />
                                 <span className="text-[10px] mt-1">แก้ไข</span>
                             </Link>
-                            <Link href={`/equipment/${item.id}/history`} className="flex flex-col items-center justify-center p-2 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">
+                            <Link href={`/equipment/${item.id}/history`} prefetch={false} className="flex flex-col items-center justify-center p-2 rounded bg-blue-50 text-blue-600 hover:bg-blue-100">
                                 <Icons.Eye className="w-4 h-4" />
                                 <span className="text-[10px] mt-1">ประวัติ</span>
                             </Link>
@@ -321,6 +360,9 @@ export default function EquipmentPage() {
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState('all');
     const [searchQuery, setSearchQuery] = useState('');
+    const deferredSearchQuery = useDeferredValue(searchQuery);
+    const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
+    const [phaseFilter, setPhaseFilter] = useState('all');
     const [categoryFilter, setCategoryFilter] = useState('all');
     const [locationFilter, setLocationFilter] = useState('all');
     const { showAlert, showConfirm } = useModal();
@@ -361,6 +403,19 @@ export default function EquipmentPage() {
         return () => unsubscribe();
     }, []);
 
+    useEffect(() => {
+        if (!db) return;
+        const unsubscribe = onSnapshot(doc(db as any, "settings", "equipment"), (docSnap) => {
+            if (!docSnap.exists()) return;
+            const data = docSnap.data();
+            setCategoryItems(normalizeCategoryItems(data.categoryItems, data.categories).filter((item) => item.active));
+        }, (error) => {
+            console.error("Error loading category settings:", error);
+        });
+
+        return () => unsubscribe();
+    }, []);
+
     // โหลดรายการแจ้งซ่อม
     useEffect(() => {
         if (!db) return;
@@ -389,15 +444,74 @@ export default function EquipmentPage() {
     };
 
     // --- CSV Import Functions ---
+    const parseCsvRows = (text: string): string[][] => {
+        const rows: string[][] = [];
+        let row: string[] = [];
+        let field = "";
+        let inQuotes = false;
+
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            const next = text[i + 1];
+
+            if (inQuotes) {
+                if (char === '"' && next === '"') {
+                    field += '"';
+                    i++;
+                } else if (char === '"') {
+                    inQuotes = false;
+                } else {
+                    field += char;
+                }
+                continue;
+            }
+
+            if (char === '"') {
+                inQuotes = true;
+            } else if (char === ",") {
+                row.push(field);
+                field = "";
+            } else if (char === "\n") {
+                row.push(field);
+                rows.push(row);
+                row = [];
+                field = "";
+            } else if (char !== "\r") {
+                field += char;
+            }
+        }
+
+        if (field || row.length) {
+            row.push(field);
+            rows.push(row);
+        }
+
+        return rows.filter((items) => items.some((item) => item.trim() !== ""));
+    };
+
+    const resolveImportedCategory = (item: any) => {
+        const rawCode = String(item.categorycode || "").trim().toUpperCase();
+        const rawName = String(item.categoryname || item.category || "").trim();
+        const rawPhase = String(item.categoryphase || "").trim();
+        const selected = (rawCode ? categoryItems.find((category) => category.code === rawCode) : undefined)
+            || (rawName ? categoryItems.find((category) => category.name === rawName && (!rawPhase || category.phase === rawPhase)) : undefined)
+            || (rawName ? categoryItems.find((category) => category.name === rawName) : undefined);
+
+        return {
+            category: selected?.name || rawName,
+            categoryCode: selected?.code || rawCode,
+            categoryName: selected?.name || rawName,
+            categoryPhase: selected?.phase || rawPhase,
+        };
+    };
+
     const downloadSampleCsv = () => {
         const sampleData = [
-            ['name', 'code', 'type', 'category', 'location', 'quantity', 'unit', 'minstock', 'description'],
-            ['สว่านไฟฟ้า', 'DRILL-001', 'borrowable', 'เครื่องมือไฟฟ้า', 'ห้องเก็บของ A', '5', 'ตัว', '2', 'สว่านไฟฟ้า Bosch 500W'],
-            ['ประแจ 10 นิ้ว', 'WRENCH-001', 'borrowable', 'เครื่องมือช่าง', 'ห้องเก็บของ A', '10', 'อัน', '3', 'ประแจปากตาย'],
-            ['น็อตสกรู M8', 'SCREW-M8', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '500', 'ตัว', '50', 'น็อตสกรู M8 x 30mm'],
-            ['เทปพันสายไฟ', 'TAPE-001', 'consumable', 'วัสดุสิ้นเปลือง', 'ห้องเก็บของ B', '50', 'ม้วน', '10', 'เทปพันสายไฟสีดำ'],
+            ['name', 'code', 'type', 'categoryCode', 'categoryName', 'categoryPhase', 'category', 'location', 'quantity', 'unit', 'minstock', 'description'],
+            ['สว่านไฟฟ้า', 'DRILL-001', 'borrowable', 'TL', 'เครื่องมือ', 'เครื่องจักรและเครื่องมือ', 'เครื่องมือ', 'ห้องเก็บของ A', '5', 'ตัว', '2', 'สว่านไฟฟ้า Bosch 500W'],
+            ['น็อตสกรู M8', 'SCREW-M8', 'consumable', 'SC', 'สกรู/พุก', 'วัสดุสิ้นเปลือง', 'สกรู/พุก', 'ห้องเก็บของ B', '500', 'ตัว', '50', 'น็อตสกรู M8 x 30mm'],
         ];
-        const csvContent = sampleData.map(row => row.join(',')).join('\n');
+        const csvContent = sampleData.map(row => row.map(escapeCsvValue).join(',')).join('\n');
         const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' }); // BOM for Thai support
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -414,14 +528,14 @@ export default function EquipmentPage() {
 
         const reader = new FileReader();
         reader.onload = (event) => {
-            const text = event.target?.result as string;
-            const lines = text.split('\n').filter(line => line.trim());
-            if (lines.length < 2) {
+            const text = String(event.target?.result || "").replace(/^\uFEFF/, "");
+            const rows = parseCsvRows(text);
+            if (rows.length < 2) {
                 showAlert('ไฟล์ CSV ไม่มีข้อมูล', 'error');
                 return;
             }
 
-            const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+            const headers = rows[0].map(h => h.trim().toLowerCase());
             const requiredHeaders = ['name', 'type', 'quantity', 'unit'];
             const missingHeaders = requiredHeaders.filter(h => !headers.includes(h));
             if (missingHeaders.length > 0) {
@@ -430,11 +544,10 @@ export default function EquipmentPage() {
                 return;
             }
 
-            const data = lines.slice(1).map(line => {
-                const values = line.split(',').map(v => v.trim());
+            const data = rows.slice(1).map(values => {
                 const obj: any = {};
                 headers.forEach((h, i) => {
-                    obj[h] = values[i] || '';
+                    obj[h] = (values[i] || '').trim();
                 });
                 return obj;
             }).filter(item => item.name); // Filter out empty rows
@@ -502,6 +615,7 @@ export default function EquipmentPage() {
                     }
                 } else {
                     // โหมดนำเข้าใหม่
+                    const categoryFields = resolveImportedCategory(item);
                     if (existing) {
                         if (duplicateAction === 'skip') {
                             logs.push({ name: item.name, status: 'skip', message: 'ข้ามเพราะมีอยู่แล้ว' });
@@ -512,7 +626,10 @@ export default function EquipmentPage() {
                                 await updateDoc(doc(db as any, 'equipment', existing.id), {
                                     code: item.code || existing.code,
                                     type: item.type === 'consumable' ? 'consumable' : 'borrowable',
-                                    category: item.category || '',
+                                    category: categoryFields.category,
+                                    categoryCode: categoryFields.categoryCode,
+                                    categoryName: categoryFields.categoryName,
+                                    categoryPhase: categoryFields.categoryPhase,
                                     location: item.location || '',
                                     quantity: qty,
                                     availableQuantity: qty,
@@ -533,7 +650,10 @@ export default function EquipmentPage() {
                                 name: item.name,
                                 code: item.code || '',
                                 type: item.type === 'consumable' ? 'consumable' : 'borrowable',
-                                category: item.category || '',
+                                category: categoryFields.category,
+                                categoryCode: categoryFields.categoryCode,
+                                categoryName: categoryFields.categoryName,
+                                categoryPhase: categoryFields.categoryPhase,
                                 location: item.location || '',
                                 quantity: qty,
                                 availableQuantity: qty,
@@ -624,11 +744,28 @@ export default function EquipmentPage() {
     };
 
     // Get unique categories and locations
-    const categories: string[] = [...new Set(equipment.map(item => item.category).filter((c): c is string => !!c))];
-    const locations: string[] = [...new Set(equipment.map(item => item.location).filter((l): l is string => !!l))];
+    const categoryPhaseByCode = useMemo(
+        () => new Map(categoryItems.map((item) => [item.code, item.phase])),
+        [categoryItems]
+    );
+    const phases: string[] = useMemo(
+        () => [...new Set(categoryItems.map(item => item.phase).filter(Boolean))],
+        [categoryItems]
+    );
+    const fallbackCategories: string[] = useMemo(
+        () => [...new Set(equipment.map(item => item.categoryName || item.category).filter((c): c is string => !!c))],
+        [equipment]
+    );
+    const categories = categoryItems.length > 0
+        ? categoryItems
+        : fallbackCategories.map((name, index) => ({ code: name, name, phase: "ทั่วไป", sortOrder: index + 1, active: true }));
+    const locations: string[] = useMemo(
+        () => [...new Set(equipment.map(item => item.location).filter((l): l is string => !!l))],
+        [equipment]
+    );
 
     // Filter equipment
-    const filteredEquipment = equipment.filter(item => {
+    const filteredEquipment = useMemo(() => equipment.filter(item => {
         // Tab filter
         let matchType = false;
         if (activeTab === 'all') {
@@ -643,36 +780,112 @@ export default function EquipmentPage() {
             matchType = item.type === activeTab;
         }
 
-        const matchCategory = categoryFilter === 'all' || item.category === categoryFilter;
+        const itemCategoryCode = item.categoryCode || '';
+        const itemCategoryName = item.categoryName || item.category || '';
+        const itemCategoryPhase = item.categoryPhase || (itemCategoryCode ? categoryPhaseByCode.get(itemCategoryCode) : '') || '';
+        const matchPhase = phaseFilter === 'all' || itemCategoryPhase === phaseFilter;
+        const matchCategory = categoryFilter === 'all' ||
+            itemCategoryCode === categoryFilter ||
+            itemCategoryName === categoryFilter ||
+            item.category === categoryFilter;
         const matchLocation = locationFilter === 'all' || item.location === locationFilter;
-        const matchSearch = !searchQuery ||
-            item.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            item.code?.toLowerCase().includes(searchQuery.toLowerCase());
-        return matchType && matchCategory && matchLocation && matchSearch;
-    });
+        const matchSearch = !deferredSearchQuery ||
+            item.name?.toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
+            item.code?.toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
+            itemCategoryCode.toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
+            itemCategoryName.toLowerCase().includes(deferredSearchQuery.toLowerCase());
+        return matchType && matchPhase && matchCategory && matchLocation && matchSearch;
+    }), [equipment, activeTab, phaseFilter, categoryFilter, locationFilter, deferredSearchQuery, categoryPhaseByCode]);
+
+    const escapeCsvValue = (value: unknown) => {
+        const text = String(value ?? '');
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+
+    const exportEquipmentCsv = () => {
+        const headers = [
+            'id',
+            'name',
+            'code',
+            'type',
+            'status',
+            'categoryCode',
+            'categoryName',
+            'categoryPhase',
+            'category',
+            'location',
+            'quantity',
+            'availableQuantity',
+            'unit',
+            'minStock',
+            'description',
+            'imageUrl',
+        ];
+
+        const rows = filteredEquipment.map((item) => {
+            const categoryCode = item.categoryCode || '';
+            const categoryName = item.categoryName || item.category || '';
+            const categoryPhase = item.categoryPhase || (categoryCode ? categoryPhaseByCode.get(categoryCode) : '') || '';
+            const values = [
+                item.id,
+                item.name,
+                item.code || '',
+                item.type || '',
+                item.status || '',
+                categoryCode,
+                categoryName,
+                categoryPhase,
+                item.category || categoryName,
+                item.location || '',
+                item.quantity ?? 0,
+                item.availableQuantity ?? 0,
+                item.unit || '',
+                item.minStock ?? 0,
+                (item as any).description || '',
+                item.imageUrl || '',
+            ];
+            return values.map(escapeCsvValue).join(',');
+        });
+
+        const csvContent = `\uFEFF${[headers.join(','), ...rows].join('\r\n')}`;
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const dateKey = new Date().toISOString().slice(0, 10);
+        link.href = url;
+        link.download = `equipment-${dateKey}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        showAlert(`Export CSV สำเร็จ ${filteredEquipment.length} รายการ`, 'success');
+    };
 
     // Count by type
-    const borrowableCount = equipment.filter(item => item.type === 'borrowable').length;
-    const consumableCount = equipment.filter(item => item.type === 'consumable').length;
+    const borrowableCount = useMemo(() => equipment.filter(item => item.type === 'borrowable').length, [equipment]);
+    const consumableCount = useMemo(() => equipment.filter(item => item.type === 'consumable').length, [equipment]);
 
     // Reset page when filters change
     useEffect(() => {
         setCurrentPage(1);
-    }, [activeTab, searchQuery, categoryFilter, locationFilter]);
+    }, [activeTab, searchQuery, phaseFilter, categoryFilter, locationFilter]);
 
     // Low stock items
-    const lowStockItems = equipment.filter(item => {
+    const lowStockItems = useMemo(() => equipment.filter(item => {
         if (item.status === 'low_stock' || item.status === 'out_of_stock') return true;
         if (item.minStock && item.minStock > 0 && (item.availableQuantity || 0) <= item.minStock) return true;
         if ((item.availableQuantity || 0) <= 0) return true;
         return false;
-    });
+    }), [equipment]);
 
     // Pagination calculation
     const totalPages = Math.ceil(filteredEquipment.length / itemsPerPage);
     const startIndex = (currentPage - 1) * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
-    const paginatedEquipment = filteredEquipment.slice(startIndex, endIndex);
+    const paginatedEquipment = useMemo(
+        () => filteredEquipment.slice(startIndex, endIndex),
+        [filteredEquipment, startIndex, endIndex]
+    );
 
     return (
         <div className="max-w-7xl mx-auto">
@@ -684,6 +897,7 @@ export default function EquipmentPage() {
                 <div className="flex flex-wrap gap-1">
                     <Link
                         href="/stock-history"
+                        prefetch={false}
                         className="inline-flex items-center justify-center px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium"
                     >
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -693,6 +907,7 @@ export default function EquipmentPage() {
                     </Link>
                     <Link
                         href="/equipment/qrcode"
+                        prefetch={false}
                         className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium shadow-sm"
                     >
                         <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -701,6 +916,16 @@ export default function EquipmentPage() {
                         </svg>
                         สร้าง QR Code
                     </Link>
+                    <button
+                        onClick={exportEquipmentCsv}
+                        disabled={filteredEquipment.length === 0}
+                        className="inline-flex items-center justify-center px-4 py-2 bg-sky-600 text-white rounded-lg hover:bg-sky-700 transition-colors font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" />
+                        </svg>
+                        Export CSV
+                    </button>
                     <button
                         onClick={() => setShowCsvModal(true)}
                         className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-sm"
@@ -712,6 +937,7 @@ export default function EquipmentPage() {
                     </button>
                     <Link
                         href="/equipment/add"
+                        prefetch={false}
                         className="inline-flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium shadow-sm"
                     >
                         <Icons.Plus className="w-5 h-5 mr-1.5" />
@@ -996,13 +1222,30 @@ export default function EquipmentPage() {
                     />
                 </div>
                 <select
+                    value={phaseFilter}
+                    onChange={(e) => {
+                        setPhaseFilter(e.target.value);
+                        setCategoryFilter('all');
+                    }}
+                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                    <option value="all">ทุกกลุ่มงาน</option>
+                    {phases.map(phase => (
+                        <option key={phase} value={phase}>{phase}</option>
+                    ))}
+                </select>
+                <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
                     className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                 >
                     <option value="all">ทุกหมวดหมู่</option>
-                    {categories.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
+                    {categories
+                        .filter(cat => phaseFilter === 'all' || cat.phase === phaseFilter)
+                        .map(cat => (
+                        <option key={cat.code} value={cat.code}>
+                            {cat.code !== cat.name ? `${cat.code} - ${cat.name}` : cat.name}
+                        </option>
                     ))}
                 </select>
                 <select
@@ -1015,9 +1258,9 @@ export default function EquipmentPage() {
                         <option key={loc} value={loc}>{loc}</option>
                     ))}
                 </select>
-                {(searchQuery || categoryFilter !== 'all' || locationFilter !== 'all') && (
+                {(searchQuery || phaseFilter !== 'all' || categoryFilter !== 'all' || locationFilter !== 'all') && (
                     <button
-                        onClick={() => { setSearchQuery(''); setCategoryFilter('all'); setLocationFilter('all'); }}
+                        onClick={() => { setSearchQuery(''); setPhaseFilter('all'); setCategoryFilter('all'); setLocationFilter('all'); }}
                         className="px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg"
                     >
                         ล้าง

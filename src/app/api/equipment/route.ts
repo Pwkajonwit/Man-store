@@ -50,6 +50,9 @@ export async function POST(request: Request) {
             name,
             code,
             category,
+            categoryCode,
+            categoryName,
+            categoryPhase,
             type, // 'borrowable' (ยืมคืน) | 'consumable' (เบิก)
             quantity,
             unit,
@@ -71,6 +74,9 @@ export async function POST(request: Request) {
             name,
             code: code || '',
             category: category || 'ทั่วไป',
+            categoryCode: categoryCode || '',
+            categoryName: categoryName || category || 'ทั่วไป',
+            categoryPhase: categoryPhase || '',
             type, // 'borrowable' | 'consumable'
             quantity: Number(quantity) || 1,
             availableQuantity: Number(quantity) || 1, // จำนวนที่พร้อมใช้งาน

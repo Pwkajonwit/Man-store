@@ -34,6 +34,31 @@ export async function POST(request: Request) {
         if (accessToken === 'MOCK_ACCESS_TOKEN') {
             console.log('[Auth API] Mock access token detected, using mock flow');
 
+            try {
+                const uid = 'dev_user_001';
+                const customToken = await admin.auth().createCustomToken(uid);
+
+                return NextResponse.json({
+                    customToken,
+                    userProfile: {
+                        id: uid,
+                        uid,
+                        lineId: uid,
+                        name: 'Dev User (ทดสอบ)',
+                        displayName: 'Dev User',
+                        role: 'admin',
+                        phone: '0812345678',
+                        position: 'Developer'
+                    }
+                });
+            } catch (error: any) {
+                console.error('Mock auth error:', error);
+                return NextResponse.json(
+                    { error: 'Authentication failed', details: error.message },
+                    { status: 500 }
+                );
+            }
+
             // Check if a test user exists or create one
             const mockLineId = 'U_TEST_1234567890ABCDEF';
             const db = admin.firestore();

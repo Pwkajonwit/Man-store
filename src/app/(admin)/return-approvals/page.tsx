@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { db } from "@/lib/firebase";
-import { collection, query, where, onSnapshot, doc, runTransaction, Timestamp } from "firebase/firestore";
+import { collection, query, where, onSnapshot, doc, runTransaction, Timestamp, getDoc, setDoc } from "firebase/firestore";
 import Image from 'next/image';
 import { useModal } from "@/components/ui/Modal";
 
@@ -14,6 +14,13 @@ interface ReturnRequest {
     equipmentCode?: string;
     userName: string;
     userId: string;
+    requestedByUserName?: string;
+    requestedByUserId?: string;
+    borrowFor?: boolean;
+    borrowerName?: string;
+    returnNote?: string;
+    returnAttachmentImageUrl?: string;
+    returnAttachmentFileName?: string;
     quantity: number;
     unit?: string;
     returnRequestTime?: any;
@@ -27,7 +34,19 @@ export default function ReturnApprovalsPage() {
     const [loading, setLoading] = useState(true);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [processing, setProcessing] = useState(false);
+    const [returnApprovalEnabled, setReturnApprovalEnabled] = useState(true);
+    const [settingLoading, setSettingLoading] = useState(true);
+    const [savingSetting, setSavingSetting] = useState(false);
+    const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
     const { showAlert, showConfirm } = useModal();
+
+    const getUniqueReturnAttachmentUrls = (items: ReturnRequest[]) => {
+        return Array.from(new Set(
+            items
+                .map((item) => item.returnAttachmentImageUrl)
+                .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        ));
+    };
 
     useEffect(() => {
         if (!db) return;
@@ -54,6 +73,53 @@ export default function ReturnApprovalsPage() {
 
         return () => unsubscribe();
     }, []);
+
+    useEffect(() => {
+        async function loadSetting() {
+            try {
+                if (!db) return;
+                const settingRef = doc(db as any, "settings", "equipment");
+                const settingSnap = await getDoc(settingRef);
+                if (settingSnap.exists()) {
+                    setReturnApprovalEnabled(settingSnap.data().returnApprovalEnabled ?? true);
+                }
+            } catch (error) {
+                console.error("Error loading return approval setting:", error);
+            } finally {
+                setSettingLoading(false);
+            }
+        }
+
+        loadSetting();
+    }, []);
+
+    const toggleReturnApprovalSetting = async () => {
+        if (!db || savingSetting) return;
+
+        const nextValue = !returnApprovalEnabled;
+        setSavingSetting(true);
+        setReturnApprovalEnabled(nextValue);
+
+        try {
+            const settingRef = doc(db as any, "settings", "equipment");
+            await setDoc(settingRef, {
+                returnApprovalEnabled: nextValue,
+                updatedAt: Timestamp.now(),
+            }, { merge: true });
+            showAlert(
+                nextValue
+                    ? "เปิดระบบอนุมัติการคืนแล้ว"
+                    : "ปิดระบบอนุมัติการคืนแล้ว รายการคืนใหม่จะอนุมัติอัตโนมัติ",
+                "success"
+            );
+        } catch (error) {
+            console.error("Error saving return approval setting:", error);
+            setReturnApprovalEnabled(!nextValue);
+            showAlert("ไม่สามารถบันทึกการตั้งค่าได้", "error");
+        } finally {
+            setSavingSetting(false);
+        }
+    };
 
     // Selection handlers
     const toggleSelect = (id: string) => {
@@ -176,15 +242,32 @@ export default function ReturnApprovalsPage() {
 
     // Grouping
     const groupedRequests = requests.reduce((acc, req) => {
-        if (!acc[req.userId]) {
-            acc[req.userId] = {
-                user: { name: req.userName, id: req.userId },
+        const groupKey = req.borrowFor
+            ? `${req.userId}:${req.requestedByUserId || ''}`
+            : req.userId;
+        const displayName = req.borrowFor
+            ? `${req.borrowerName || req.userName} (ยืมแทน)`
+            : req.userName;
+
+        if (!acc[groupKey]) {
+            acc[groupKey] = {
+                user: {
+                    name: displayName,
+                    id: req.userId,
+                    groupKey,
+                    requestedByName: req.borrowFor ? (req.requestedByUserName || '') : '',
+                    borrowerName: req.borrowerName || req.userName || '',
+                    returnNote: req.returnNote || '',
+                },
                 items: []
             };
         }
-        acc[req.userId].items.push(req);
+        if (req.returnNote && !acc[groupKey].user.returnNote) {
+            acc[groupKey].user.returnNote = req.returnNote;
+        }
+        acc[groupKey].items.push(req);
         return acc;
-    }, {} as Record<string, { user: { name: string, id: string }, items: ReturnRequest[] }>);
+    }, {} as Record<string, { user: { name: string, id: string, groupKey: string, requestedByName?: string, borrowerName?: string, returnNote?: string }, items: ReturnRequest[] }>);
 
 
     if (loading) {
@@ -207,6 +290,23 @@ export default function ReturnApprovalsPage() {
                 </div>
 
                 <div className="flex items-center gap-3">
+                    <button
+                        type="button"
+                        onClick={toggleReturnApprovalSetting}
+                        disabled={settingLoading || savingSetting}
+                        className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left transition-colors hover:bg-gray-100 disabled:opacity-60"
+                    >
+                        <span className="hidden sm:block">
+                            <span className="block text-xs font-medium text-gray-700">ระบบอนุมัติการคืน</span>
+                            <span className={`block text-[11px] ${returnApprovalEnabled ? "text-teal-600" : "text-orange-600"}`}>
+                                {returnApprovalEnabled ? "เปิดใช้งาน" : "ปิด: อนุมัติอัตโนมัติ"}
+                            </span>
+                        </span>
+                        <span className={`relative h-6 w-11 rounded-full transition-colors ${returnApprovalEnabled ? "bg-teal-600" : "bg-gray-300"}`}>
+                            <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${returnApprovalEnabled ? "translate-x-5" : ""}`}></span>
+                        </span>
+                    </button>
+
                     {selectedIds.size > 0 && (
                         <div className="flex items-center gap-3 animate-in fade-in slide-in-from-right-4">
                             <span className="text-sm font-medium text-gray-600 hidden md:inline">
@@ -250,6 +350,12 @@ export default function ReturnApprovalsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-20">
                     {Object.values(groupedRequests).map((group) => {
                         const isAllUserSelected = group.items.every(item => selectedIds.has(item.id));
+                        const attachmentUrls = getUniqueReturnAttachmentUrls(group.items);
+                        const showGroupAttachment = attachmentUrls.length === 1;
+                        const showItemAttachments = attachmentUrls.length > 1;
+                        const groupAttachmentItem = showGroupAttachment
+                            ? group.items.find((item) => item.returnAttachmentImageUrl === attachmentUrls[0])
+                            : undefined;
 
                         return (
                             <div key={group.user.id} className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden flex flex-col">
@@ -263,12 +369,53 @@ export default function ReturnApprovalsPage() {
                                         <span className="text-xs text-gray-400 shrink-0">({group.items.length})</span>
                                     </div>
                                     <button
-                                        onClick={() => toggleSelectUser(group.user.id)}
+                                        onClick={() => {
+                                            const groupIds = group.items.map(item => item.id);
+                                            const allSelected = groupIds.every(id => selectedIds.has(id));
+                                            const next = new Set(selectedIds);
+                                            groupIds.forEach(id => allSelected ? next.delete(id) : next.add(id));
+                                            setSelectedIds(next);
+                                        }}
                                         className="text-[10px] text-gray-500 hover:text-teal-600 transition-colors shrink-0"
                                     >
                                         {isAllUserSelected ? 'ยกเลิก' : 'ทั้งหมด'}
                                     </button>
                                 </div>
+                                {(group.user.requestedByName || showGroupAttachment) && (
+                                    <div className="px-3 py-2 bg-amber-50 border-b border-amber-100 flex items-start justify-between gap-3">
+                                        <div className="min-w-0 text-[11px] text-amber-700">
+                                            {group.user.requestedByName && (
+                                                <div>ผู้ยืม: {group.user.borrowerName || group.user.name} • ทำแทนโดย {group.user.requestedByName}</div>
+                                            )}
+                                            {group.user.returnNote && (
+                                                <div className="mt-1 rounded-md bg-white/70 px-2 py-1 text-[10px] text-amber-800">
+                                                    เหตุผล: {group.user.returnNote}
+                                                </div>
+                                            )}
+                                        </div>
+                                        {showGroupAttachment && groupAttachmentItem?.returnAttachmentImageUrl && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setPreviewImage({
+                                                url: groupAttachmentItem.returnAttachmentImageUrl || '',
+                                                title: groupAttachmentItem.equipmentName || group.user.name,
+                                            })}
+                                            className="shrink-0 flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-1.5 hover:ring-2 hover:ring-teal-100"
+                                        >
+                                            <span className="relative h-12 w-12 overflow-hidden rounded-md bg-gray-100">
+                                                <Image
+                                                    src={groupAttachmentItem.returnAttachmentImageUrl}
+                                                    alt="return attachment"
+                                                    fill
+                                                    className="object-cover"
+                                                    sizes="48px"
+                                                    unoptimized
+                                                />
+                                            </span>
+                                        </button>
+                                        )}
+                                    </div>
+                                )}
 
                                 {/* Items List */}
                                 <div className="divide-y divide-gray-50 flex-1 overflow-y-auto max-h-[400px]">
@@ -310,6 +457,35 @@ export default function ReturnApprovalsPage() {
                                                     <span className="text-gray-300">|</span>
                                                     <span>แจ้ง: {new Date(item.returnRequestTime).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</span>
                                                 </div>
+                                                {showItemAttachments && item.returnAttachmentImageUrl && (
+                                                    <div className="mt-2 flex items-start gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                setPreviewImage({
+                                                                    url: item.returnAttachmentImageUrl || '',
+                                                                    title: item.equipmentName || 'รูปแนบการคืน',
+                                                                });
+                                                            }}
+                                                            className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100 hover:ring-2 hover:ring-teal-100"
+                                                        >
+                                                            <Image
+                                                                src={item.returnAttachmentImageUrl}
+                                                                alt="return attachment"
+                                                                fill
+                                                                className="object-cover"
+                                                                sizes="56px"
+                                                                unoptimized
+                                                            />
+                                                        </button>
+                                                        {item.returnNote && (
+                                                            <div className="min-w-0 rounded-md bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+                                                                เหตุผล: {item.returnNote}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
@@ -317,6 +493,42 @@ export default function ReturnApprovalsPage() {
                             </div>
                         );
                     })}
+                </div>
+            )}
+
+            {previewImage && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                    onClick={() => setPreviewImage(null)}
+                >
+                    <div
+                        className="w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                            <div className="min-w-0">
+                                <h3 className="truncate text-sm font-semibold text-gray-900">{previewImage.title}</h3>
+                                <p className="text-xs text-gray-500">รูปแนบการคืน</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setPreviewImage(null)}
+                                className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+                            >
+                                ปิด
+                            </button>
+                        </div>
+                        <div className="relative h-[70vh] bg-gray-950">
+                            <Image
+                                src={previewImage.url}
+                                alt="return attachment preview"
+                                fill
+                                className="object-contain"
+                                sizes="90vw"
+                                unoptimized
+                            />
+                        </div>
+                    </div>
                 </div>
             )}
 

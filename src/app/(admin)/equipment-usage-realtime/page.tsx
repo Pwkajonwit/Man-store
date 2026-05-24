@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import Image from "next/image";
 
 // --- Icons ---
 const Icons = {
@@ -27,6 +28,12 @@ interface UsageRecord {
     quantity: number;
     unit: string;
     location?: string;
+    requestedByUserName?: string;
+    requestedByUserId?: string;
+    borrowFor?: boolean;
+    borrowerName?: string;
+    attachmentImageUrl?: string;
+    attachmentFileName?: string;
 }
 
 interface UserGroup {
@@ -34,11 +41,17 @@ interface UserGroup {
     userId: string;
     items: UsageRecord[];
     lastActive: any;
+    attachmentImageUrl?: string;
+    attachmentTitle?: string;
+    borrowFor?: boolean;
+    requestedByUserName?: string;
+    borrowerName?: string;
 }
 
 export default function RealtimeUsagePage() {
     const [userGroups, setUserGroups] = useState<UserGroup[]>([]);
     const [loading, setLoading] = useState(true);
+    const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
     useEffect(() => {
         if (!db) return;
@@ -74,6 +87,12 @@ export default function RealtimeUsagePage() {
                     borrowTime: data.borrowTime?.toDate?.() || data.borrowTime,
                     quantity: data.quantity,
                     unit: data.unit,
+                    requestedByUserName: data.requestedByUserName || '',
+                    requestedByUserId: data.requestedByUserId || '',
+                    borrowFor: Boolean(data.borrowFor),
+                    borrowerName: data.borrowerName || '',
+                    attachmentImageUrl: data.attachmentImageUrl || '',
+                    attachmentFileName: data.attachmentFileName || '',
                     location: equipmentMap.get(data.equipmentName) || "ไม่ระบุ"
                 };
 
@@ -82,11 +101,23 @@ export default function RealtimeUsagePage() {
                         userName: record.userName,
                         userId: record.userId,
                         items: [],
-                        lastActive: record.borrowTime
+                        lastActive: record.borrowTime,
+                        borrowFor: record.borrowFor,
+                        requestedByUserName: record.requestedByUserName,
+                        borrowerName: record.borrowerName || record.userName,
                     };
                 }
 
                 groups[record.userId].items.push(record);
+                if (record.borrowFor) {
+                    groups[record.userId].borrowFor = true;
+                    groups[record.userId].requestedByUserName = record.requestedByUserName;
+                    groups[record.userId].borrowerName = record.borrowerName || record.userName;
+                }
+                if (record.attachmentImageUrl && !groups[record.userId].attachmentImageUrl) {
+                    groups[record.userId].attachmentImageUrl = record.attachmentImageUrl;
+                    groups[record.userId].attachmentTitle = record.equipmentName;
+                }
                 if (record.borrowTime > groups[record.userId].lastActive) {
                     groups[record.userId].lastActive = record.borrowTime;
                 }
@@ -148,17 +179,41 @@ export default function RealtimeUsagePage() {
                                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
                                         กำลังใช้งาน
                                     </div>
+                                    {group.borrowFor && (
+                                        <div className="mt-1 inline-flex max-w-full items-center rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                                            <span className="truncate">
+                                                ยืมแทนโดย {group.requestedByUserName || '-'}
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
                                 <span className="text-[10px] font-medium bg-gray-100 text-gray-500 px-2 py-1 rounded-full border border-gray-200">
                                     {group.items.length} รายการ
                                 </span>
+                                {group.attachmentImageUrl && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewImage({ url: group.attachmentImageUrl || '', title: group.attachmentTitle || group.userName })}
+                                        className="relative h-12 w-12 flex-shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 hover:ring-2 hover:ring-indigo-200 transition"
+                                        title="ดูรูปแนบ"
+                                    >
+                                        <Image
+                                            src={group.attachmentImageUrl}
+                                            alt="attachment"
+                                            fill
+                                            className="object-cover"
+                                            sizes="48px"
+                                            unoptimized
+                                        />
+                                    </button>
+                                )}
                             </div>
 
                             {/* List */}
                             <div className="p-2 flex-1 flex flex-col gap-1.5">
                                 {group.items.map((item) => (
-                                    <div key={item.id} className="group flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
-                                        <div className="min-w-0 pr-4">
+                                    <div key={item.id} className="group flex items-center justify-between gap-3 p-3 rounded-xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-100">
+                                        <div className="min-w-0 flex-1">
                                             <div className="font-medium text-sm text-gray-800 truncate">{item.equipmentName}</div>
                                             <div className="flex items-center gap-2 mt-1">
                                                 <span className="text-[10px] px-1.5 py-px rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-medium truncate max-w-[120px]">
@@ -175,6 +230,42 @@ export default function RealtimeUsagePage() {
                             </div>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {previewImage && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+                    onClick={() => setPreviewImage(null)}
+                >
+                    <div
+                        className="w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+                        onClick={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                            <div className="min-w-0">
+                                <h3 className="truncate text-sm font-semibold text-gray-900">{previewImage.title}</h3>
+                                <p className="text-xs text-gray-500">รูปแนบการยืม</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setPreviewImage(null)}
+                                className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
+                            >
+                                ปิด
+                            </button>
+                        </div>
+                        <div className="relative h-[70vh] bg-gray-950">
+                            <Image
+                                src={previewImage.url}
+                                alt="attachment preview"
+                                fill
+                                className="object-contain"
+                                sizes="90vw"
+                                unoptimized
+                            />
+                        </div>
+                    </div>
                 </div>
             )}
         </div>
