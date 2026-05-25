@@ -7,6 +7,7 @@ import dynamic from 'next/dynamic';
 import { useAuth } from "@/context/AuthContext";
 import { useAppSettings } from "@/context/AppSettingsContext";
 import { db, storage } from "@/lib/firebase";
+import { buildUsageNotificationFlex, sanitizeFlexMessage } from "@/lib/lineFlex";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import MainHeader from '@/components/main/MainHeader';
@@ -155,9 +156,67 @@ export default function EquipmentSelectionPage() {
 
     // Get LINE settings from context (loaded once in layout)
     const userChatMessageEnabled = lineSettings.userChatMessage;
-    const currentUserId = userProfile?.lineId || user?.uid || '';
+    const currentLineUserId = userProfile?.lineId || '';
+    const currentUserId = currentLineUserId || user?.uid || '';
     const currentUserName = userProfile?.name || userProfile?.displayName || user?.displayName || 'ไม่ระบุชื่อ';
     const isBorrowFor = borrowForMode && activeTab === 'borrowable';
+
+    const sendUserFlexMessage = async (
+        flexMessage: { altText: string; contents: any },
+        options: { forcePush?: boolean; fallbackText?: string } = {}
+    ) => {
+        if (!currentUserId) return false;
+        const safeFlexMessage = sanitizeFlexMessage(flexMessage);
+        let sentWithLiff = false;
+
+        try {
+            const liff = (await import('@line/liff')).default;
+            if (liff.isInClient()) {
+                try {
+                    await liff.sendMessages([{ type: 'flex', ...safeFlexMessage } as any]);
+                    sentWithLiff = true;
+                } catch (flexError) {
+                    console.log('LIFF flex message not sent:', flexError);
+                    if (options.fallbackText) {
+                        await liff.sendMessages([{ type: 'text', text: options.fallbackText }]);
+                        sentWithLiff = true;
+                    }
+                }
+            }
+        } catch (lineError) {
+            console.log('LIFF message not sent, falling back to push:', lineError);
+        }
+
+        if (sentWithLiff && !options.forcePush) return true;
+        if (!currentLineUserId) {
+            if (options.forcePush) {
+                console.log('LINE push fallback skipped: current user has no LINE userId');
+            }
+            return sentWithLiff;
+        }
+
+        const response = await fetch('/api/send-line-flex', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to: currentLineUserId, flexMessage: safeFlexMessage }),
+        });
+
+        if (!response.ok) {
+            const result = await response.json().catch(() => null);
+            console.log('LINE push fallback failed:', result);
+            if (options.fallbackText) {
+                const textResponse = await fetch('/api/send-line-message', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ to: currentLineUserId, message: options.fallbackText }),
+                });
+                return textResponse.ok || sentWithLiff;
+            }
+            return sentWithLiff;
+        }
+
+        return true;
+    };
 
     // ดึงรายการอุปกรณ์
     useEffect(() => {
@@ -452,52 +511,34 @@ export default function EquipmentSelectionPage() {
 
             // Send LINE Flex Message (optional - keeping existing logic)
             if (userChatMessageEnabled) {
-                // ... (LINE logic remains same if client-side or separate api call, skipping strictly strictly for now but keeping placeholder structure if needed)
                 try {
-                    const liff = (await import('@line/liff')).default;
-                    if (liff.isInClient()) {
-                        // ... existing LIFF send message logic ...
-                        const actionText = activeTab === 'borrowable' ? 'ยืม' : 'เบิก';
-                        const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+                    const actionText = activeTab === 'borrowable' ? 'ยืม' : 'เบิก';
+                    const now = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-                        const itemContents = cart.map(c => ({
-                            type: 'box',
-                            layout: 'horizontal',
-                            contents: [
-                                { type: 'text', text: c.name, size: 'sm', color: '#333333', flex: 3 },
-                                { type: 'text', text: `${c.quantity} ${c.unit || ''}`, size: 'sm', color: '#888888', align: 'end', flex: 1 }
-                            ]
-                        }));
+                    const fallbackText = [
+                        `${isBorrowFor ? 'ยืมแทนอุปกรณ์' : `${actionText}อุปกรณ์`}สำเร็จ ${successCount} รายการ`,
+                        ...(isBorrowFor ? [`ผู้ยืม: ${trimmedBorrowerName}`, `ทำแทนโดย: ${currentUserName}`] : []),
+                        ...cart.map(c => `- ${c.name} ${c.quantity} ${c.unit || ''}`),
+                    ].join('\n');
 
-                        await liff.sendMessages([{
-                            type: 'flex',
-                            altText: `${isBorrowFor ? 'ยืมแทน' : actionText}อุปกรณ์ ${successCount} รายการ`,
-                            contents: {
-                                type: 'bubble',
-                                size: 'kilo',
-                                body: {
-                                    type: 'box',
-                                    layout: 'vertical',
-                                    contents: [
-                                        { type: 'text', text: `${isBorrowFor ? 'ยืมแทนอุปกรณ์' : `${actionText}อุปกรณ์`}สำเร็จ`, weight: 'bold', size: 'md', color: '#333333' },
-                                        { type: 'text', text: `${successCount} รายการ`, size: 'sm', color: '#888888', margin: 'xs' },
-                                        ...(isBorrowFor ? [
-                                            { type: 'text', text: `ผู้ยืม: ${trimmedBorrowerName}`, size: 'xs', color: '#D97706', margin: 'sm', wrap: true },
-                                            { type: 'text', text: `ทำแทนโดย: ${currentUserName}`, size: 'xs', color: '#D97706', margin: 'xxs', wrap: true },
-                                        ] : []),
-                                        { type: 'separator', margin: 'lg' },
-                                        { type: 'box', layout: 'vertical', contents: itemContents, margin: 'lg', spacing: 'sm' },
-                                        ...(purpose ? [
-                                            { type: 'separator', margin: 'lg' },
-                                            { type: 'text', text: purpose, size: 'xs', color: '#888888', margin: 'lg', wrap: true }
-                                        ] : []),
-                                        { type: 'separator', margin: 'lg' },
-                                        { type: 'text', text: now, size: 'xs', color: '#AAAAAA', margin: 'lg', align: 'end' }
-                                    ],
-                                    paddingAll: '16px'
-                                }
-                            }
-                        } as any]);
+                    const flexMessage = buildUsageNotificationFlex({
+                        title: `${isBorrowFor ? 'ยืมแทนอุปกรณ์' : `${actionText}อุปกรณ์`}สำเร็จ`,
+                        subtitle: `${successCount} รายการ`,
+                        metaLines: [
+                            ...(isBorrowFor ? [`ผู้ยืม: ${trimmedBorrowerName}`, `ทำแทนโดย: ${currentUserName}`] : []),
+                            ...(purpose ? [`วัตถุประสงค์: ${purpose}`] : []),
+                        ],
+                        rows: cart.map(c => ({
+                            name: c.name,
+                            quantity: c.quantity,
+                            unit: c.unit || 'ชิ้น',
+                        })),
+                        footer: now,
+                    });
+
+                    const lineSent = await sendUserFlexMessage(flexMessage, { fallbackText });
+                    if (isBorrowFor && !lineSent) {
+                        console.log('Borrow-for LIFF message was not sent. Check LIFF chat scope and Flex payload.');
                     }
                 } catch (lineError) {
                     console.log('LINE message not sent:', lineError);

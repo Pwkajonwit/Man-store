@@ -27,6 +27,9 @@ interface EquipmentUsageHistory {
     borrowerName?: string;
     attachmentImageUrl?: string;
     attachmentFileName?: string;
+    returnAttachmentImageUrl?: string;
+    returnAttachmentFileName?: string;
+    returnNote?: string;
     quantity?: number;
     unit?: string;
     borrowTime?: Date;
@@ -138,6 +141,10 @@ const EnhancedHistoryItem = memo(function EnhancedHistoryItem({
             : item.status === 'active'
                 ? 'bg-yellow-100 text-yellow-700'
                 : 'bg-gray-100 text-gray-600';
+    const attachments = [
+        item.attachmentImageUrl ? { url: item.attachmentImageUrl, label: 'ยืม', title: `รูปตอนยืม - ${item.equipmentName || 'อุปกรณ์'}`, color: 'blue' } : null,
+        item.returnAttachmentImageUrl ? { url: item.returnAttachmentImageUrl, label: 'คืน', title: `รูปตอนคืน - ${item.equipmentName || 'อุปกรณ์'}`, color: 'green' } : null,
+    ].filter(Boolean) as { url: string; label: string; title: string; color: 'blue' | 'green' }[];
 
     return (
         <div className="bg-white rounded-xl shadow-sm p-3 flex items-center gap-3">
@@ -170,15 +177,37 @@ const EnhancedHistoryItem = memo(function EnhancedHistoryItem({
                 </div>
             </div>
 
-            {item.attachmentImageUrl && (
+            {false && item.attachmentImageUrl && (
                 <button
                     type="button"
                     onClick={() => onPreviewImage(item.attachmentImageUrl || '', item.equipmentName || 'รูปแนบ')}
                     className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 hover:ring-2 hover:ring-teal-200 transition"
                     title="ดูรูปแนบ"
                 >
-                    <Image src={item.attachmentImageUrl} alt="attachment" fill className="object-cover" sizes="48px" unoptimized />
+                    <Image src={item.attachmentImageUrl || ''} alt="attachment" fill className="object-cover" sizes="48px" unoptimized />
                 </button>
+            )}
+
+            {attachments.length > 0 && (
+                <div className="flex shrink-0 items-center gap-2">
+                    {attachments.map((attachment) => (
+                        <button
+                            key={`${attachment.label}-${attachment.url}`}
+                            type="button"
+                            onClick={() => onPreviewImage(attachment.url, attachment.title)}
+                            className={`relative h-12 w-12 overflow-hidden rounded-lg border transition hover:ring-2 ${attachment.color === 'blue'
+                                ? 'border-blue-100 bg-blue-50 hover:ring-blue-200'
+                                : 'border-green-100 bg-green-50 hover:ring-green-200'
+                                }`}
+                            title={attachment.title}
+                        >
+                            <Image src={attachment.url} alt={attachment.title} fill className="object-cover" sizes="48px" unoptimized />
+                            <span className={`absolute bottom-0 left-0 right-0 py-0.5 text-[9px] font-medium text-white ${attachment.color === 'blue' ? 'bg-blue-600/85' : 'bg-green-600/85'}`}>
+                                {attachment.label}
+                            </span>
+                        </button>
+                    ))}
+                </div>
             )}
 
             <div className="flex flex-col items-end gap-1">

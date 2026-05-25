@@ -1,9 +1,9 @@
 import { Client, FlexMessage } from '@line/bot-sdk';
+import { sanitizeFlexMessage } from '@/lib/lineFlex';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
-// Lazy initialization
 let client: Client | null = null;
 
 const getClient = () => {
@@ -41,14 +41,13 @@ export async function POST(request: Request) {
             return NextResponse.json({ message: 'Missing "to" or "flexMessage" in request body' }, { status: 400 });
         }
 
-        // Create a flex message object
+        const safeFlexMessage = sanitizeFlexMessage(flexMessage);
         const messageObject: FlexMessage = {
             type: 'flex',
-            altText: String(flexMessage.altText || 'แจ้งเตือน').slice(0, 400),
-            contents: flexMessage.contents,
+            altText: safeFlexMessage.altText,
+            contents: safeFlexMessage.contents,
         };
 
-        // Send the push message
         await lineClient.pushMessage(recipient, messageObject);
 
         return NextResponse.json({ success: true, message: `Flex message sent to ${recipient}` });
