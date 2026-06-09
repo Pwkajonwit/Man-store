@@ -73,9 +73,9 @@ export default function AdminSidebar({ isOpen = false, onClose = () => { } }: { 
     const role = userProfile.role;
     if (role !== 'admin' && role !== 'employee') return null;
 
-    // Desktop sidebar
+    // Desktop sidebar (fixed so it doesn't scroll with page)
     const desktop = (
-        <aside className="hidden md:flex w-64 p-4 text-white gradient-bg shrink-0 flex-col justify-between">
+        <aside className="hidden md:flex fixed left-0 top-0 h-screen w-64 p-4 text-white gradient-bg flex-col justify-between z-40 overflow-y-auto">
             <div>
                 <h2 className="mb-8 text-2xl font-bold">Admin Panel</h2>
                 <nav>

@@ -175,10 +175,11 @@ interface EquipmentTableProps {
     equipment: Equipment[];
     onDelete: (id: string) => void;
     onRestock: (eq: Equipment) => void;
+    onPreviewImage: (eq: Equipment) => void;
     repairReports: RepairReport[];
 }
 
-function EquipmentTable({ equipment, onDelete, onRestock, repairReports }: EquipmentTableProps) {
+function EquipmentTable({ equipment, onDelete, onRestock, onPreviewImage, repairReports }: EquipmentTableProps) {
     return (
         <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <table className="min-w-full divide-y divide-gray-200">
@@ -203,7 +204,14 @@ function EquipmentTable({ equipment, onDelete, onRestock, repairReports }: Equip
                                     <div className="flex items-center">
                                         <div className="h-12 w-12 flex-shrink-0 relative rounded-lg overflow-hidden border border-gray-200 bg-gray-100">
                                             {item.imageUrl ? (
-                                                <Image src={item.imageUrl} alt={item.name} fill className="object-cover" unoptimized />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onPreviewImage(item)}
+                                                    className="relative block h-full w-full cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2"
+                                                    title="ดูรูปอุปกรณ์"
+                                                >
+                                                    <Image src={item.imageUrl} alt={item.name} fill className="object-cover" unoptimized />
+                                                </button>
                                             ) : (
                                                 <div className="flex items-center justify-center h-full w-full text-gray-400">
                                                     <Icons.Tool className="w-6 h-6" />
@@ -269,7 +277,7 @@ function EquipmentTable({ equipment, onDelete, onRestock, repairReports }: Equip
     );
 }
 
-function EquipmentCards({ equipment, onDelete, onRestock, repairReports }: EquipmentTableProps) {
+function EquipmentCards({ equipment, onDelete, onRestock, onPreviewImage, repairReports }: EquipmentTableProps) {
     return (
         <div className="md:hidden grid grid-cols-1 gap-4">
             {equipment.map((item) => {
@@ -281,7 +289,14 @@ function EquipmentCards({ equipment, onDelete, onRestock, repairReports }: Equip
                         <div className="flex gap-4">
                             <div className="h-16 w-16 flex-shrink-0 relative rounded-lg overflow-hidden border border-gray-200 bg-gray-100">
                                 {item.imageUrl ? (
-                                    <Image src={item.imageUrl} alt={item.name} fill className="object-cover" unoptimized />
+                                    <button
+                                        type="button"
+                                        onClick={() => onPreviewImage(item)}
+                                        className="relative block h-full w-full cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2"
+                                        title="ดูรูปอุปกรณ์"
+                                    >
+                                        <Image src={item.imageUrl} alt={item.name} fill className="object-cover" unoptimized />
+                                    </button>
                                 ) : (
                                     <div className="flex items-center justify-center h-full w-full text-gray-400">
                                         <Icons.Tool className="w-8 h-8" />
@@ -386,6 +401,7 @@ export default function EquipmentPage() {
     const [restockQuantity, setRestockQuantity] = useState('');
     const [restockNote, setRestockNote] = useState('');
     const [restocking, setRestocking] = useState(false);
+    const [previewImage, setPreviewImage] = useState<Equipment | null>(null);
 
     useEffect(() => {
         if (!db) return;
@@ -1305,8 +1321,8 @@ export default function EquipmentPage() {
                 </div>
             ) : (
                 <>
-                    <EquipmentTable equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
-                    <EquipmentCards equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} repairReports={repairReports} />
+                    <EquipmentTable equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} onPreviewImage={setPreviewImage} repairReports={repairReports} />
+                    <EquipmentCards equipment={paginatedEquipment} onDelete={handleDelete} onRestock={openRestockModal} onPreviewImage={setPreviewImage} repairReports={repairReports} />
 
                     {/* Pagination Controls */}
                     {totalPages > 1 && (
@@ -1391,6 +1407,44 @@ export default function EquipmentPage() {
                         </div>
                     )}
                 </>
+            )}
+
+            {previewImage?.imageUrl && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <button
+                        type="button"
+                        className="absolute inset-0 bg-black/70"
+                        onClick={() => setPreviewImage(null)}
+                        aria-label="ปิดรูปตัวอย่าง"
+                    />
+                    <div className="relative z-10 w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl">
+                        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+                            <div className="min-w-0">
+                                <h3 className="truncate text-sm font-semibold text-gray-900">{previewImage.name}</h3>
+                                {previewImage.code && <p className="text-xs text-gray-500">รหัส: {previewImage.code}</p>}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setPreviewImage(null)}
+                                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                                aria-label="ปิด"
+                            >
+                                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="relative h-[70vh] max-h-[720px] min-h-[280px] bg-gray-950">
+                            <Image
+                                src={previewImage.imageUrl}
+                                alt={previewImage.name}
+                                fill
+                                className="object-contain"
+                                unoptimized
+                            />
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Restock Modal */}

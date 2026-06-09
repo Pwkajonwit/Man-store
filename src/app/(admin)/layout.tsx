@@ -73,7 +73,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <ModalProvider>
             <div className="flex">
                 <AdminSidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-                <main className="flex-1 min-h-screen flex flex-col bg-gray-100">
+                <main className="flex-1 min-h-screen flex flex-col bg-gray-100 md:ml-64">
                     <div className="px-4 py-2 md:p-6 md:py-2 bg-white shadow-sm">
                         <AdminHeader onMenuClick={() => setSidebarOpen(true)} />
                     </div>
