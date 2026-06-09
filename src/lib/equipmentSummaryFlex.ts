@@ -221,7 +221,7 @@ function lowStockItem(item: any, index: number) {
     return {
         type: 'box',
         layout: 'vertical',
-        spacing: 'xxs',
+        spacing: 'xs',
         margin: 'xs',
         contents: [
             {
