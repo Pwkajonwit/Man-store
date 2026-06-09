@@ -52,7 +52,7 @@ function metricBox(label: string, value: string, color: string) {
             {
                 type: 'text',
                 text: label,
-                size: 'xxs',
+                size: 'xs',
                 color: '#64748B',
                 weight: 'bold',
             },
@@ -77,7 +77,7 @@ function detailLine(label: string, value: string, color = '#334155') {
             {
                 type: 'text',
                 text: label,
-                size: 'xxs',
+                size: 'xs',
                 color: '#94A3B8',
                 flex: 2,
             },
@@ -102,10 +102,10 @@ function borrowForLine(usage: any) {
     return {
         type: 'text',
         text: `ยืมแทน: ${borrowerName} • โดย ${requestedByName}`,
-        size: 'xxs',
+        size: 'xs',
         color: '#D97706',
         wrap: true,
-        margin: 'xxs',
+        margin: 'xs',
     };
 }
 
@@ -261,7 +261,7 @@ function lowStockItem(item: any, index: number) {
             ...(category || item.location ? [{
                 type: 'text',
                 text: [category, item.location].filter(Boolean).map((value) => truncate(value, 24)).join(' • '),
-                size: 'xxs',
+                size: 'xs',
                 color: '#94A3B8',
                 wrap: true,
             }] : []),
@@ -480,7 +480,7 @@ export function equipmentSummaryFlex(type: EquipmentSummaryType, usages: any[], 
                         ...(lowStockItems.length > lowStockBoxes.length ? [{
                             type: 'text',
                             text: `และอีก ${lowStockItems.length - lowStockBoxes.length} รายการ`,
-                            size: 'xxs',
+                            size: 'xs',
                             color: '#92400E',
                             align: 'end',
                         }] : []),
